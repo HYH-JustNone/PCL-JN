@@ -12,7 +12,7 @@ Imports System.Runtime.InteropServices
 <Assembly: AssemblyDescription("由 just_none 维护的 Plain Craft Launcher 修改版")>
 <Assembly: AssemblyCompany("just_none")>
 <Assembly: AssemblyProduct("Plain Craft Launcher - JN")>
-<Assembly: AssemblyCopyright("")>
+<Assembly: AssemblyCopyright("Copyright © 成都瓜皮龙科技有限公司；PCL-JN 修改 by just_none")>
 <Assembly: AssemblyConfiguration("PCL2 Config Mark")>
 <Assembly: ComVisible(False)>
 

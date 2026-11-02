@@ -82,45 +82,6 @@ Friend Module ModSecret
             If ThemeNow = NewTheme AndAlso NewTheme >= 0 Then Return
             If NewTheme >= 0 Then ThemeNow = NewTheme
 
-            '按主题设置基础配色
-            ColorHue = 210
-            ColorSat = 85
-            ColorLightAdjust = 0
-            ColorHueTopbarDelta = 0
-            Select Case ThemeNow
-                Case 1 '甜柠青
-                    ColorHue = 180
-                Case 2 '小草绿
-                    ColorHue = 120
-                Case 3 '菠萝黄
-                    ColorHue = 50
-                Case 4 '橡木棕
-                    ColorHue = 30
-                    ColorSat = 45
-                Case 5 '玄素黑
-                    ColorLightAdjust = 999
-                Case 6 '铁杆粉
-                    ColorHue = 330
-                Case 7 '神秘紫
-                    ColorHue = 270
-                Case 8 '秋仪金
-                    ColorHue = 40
-                Case 9 '活跃橙
-                    ColorHue = 25
-                Case 10 '跳票红
-                    ColorHue = 0
-                Case 11 '极客蓝
-                    ColorHue = 210
-                    ColorLightAdjust = -30
-                Case 12 '滑稽彩
-                    ColorHue = RandomInteger(0, 359)
-                    ColorSat = RandomInteger(40, 70)
-                    ColorLightAdjust = RandomInteger(-20, 20)
-                Case 13 '欧皇彩
-                    ColorHue = RandomInteger(0, 359)
-                    ColorSat = RandomInteger(60, 90)
-            End Select
-
             Color1 = New MyColor().FromHSL2(ColorHue, ColorSat * 0.2, 25 + ColorLightAdjust * 0.3)
             Color2 = New MyColor().FromHSL2(ColorHue, ColorSat, 45 + ColorLightAdjust)
             Color3 = New MyColor().FromHSL2(ColorHue, ColorSat, 55 + ColorLightAdjust)
@@ -184,24 +145,14 @@ Friend Module ModSecret
         End Sub)
     End Sub
     Friend Sub ThemeCheckAll(EffectSetup As Boolean)
-        If FrmSetupUI Is Nothing Then Return
-        '启用全部主题（含隐藏主题）
-        For Each Control In FrmSetupUI.PanLauncherTheme.Children
-            If TypeOf Control Is MyRadioBox Then CType(Control, MyRadioBox).IsEnabled = True
-        Next
-        '去掉隐藏主题的遮挡层
-        FrmSetupUI.RadioLauncherTheme5.Opacity = 1
-        FrmSetupUI.RadioLauncherTheme5Gray.Visibility = System.Windows.Visibility.Collapsed
-        FrmSetupUI.LabLauncherTheme5Unlock.Visibility = System.Windows.Visibility.Collapsed
-        FrmSetupUI.LabLauncherTheme8Copy.Visibility = System.Windows.Visibility.Collapsed
-        FrmSetupUI.LabLauncherTheme9Copy.Visibility = System.Windows.Visibility.Collapsed
-        FrmSetupUI.LabLauncherTheme11Click.Visibility = System.Windows.Visibility.Collapsed
+        'PCL-JN：主题切换功能已移除，界面固定为龙猫蓝配色
     End Sub
     Friend Function ThemeCheckOne(Id As Integer) As Boolean
         Return True
     End Function
     Friend Function ThemeUnlock(Id As Integer, Optional ShowDoubleHint As Boolean = True, Optional UnlockHint As String = Nothing) As Boolean
-        Return True
+        'PCL-JN：主题切换功能已移除，不再解锁任何隐藏主题
+        Return False
     End Function
 
 #End Region
