@@ -4,6 +4,7 @@ Public Class PageSetupLaunch
         '重复加载部分
         PanBack.ScrollToHome()
         RefreshRam(False)
+        RefreshPlugins()
         BtnSwitch.Visibility = If(McInstanceSelected Is Nothing, Visibility.Collapsed, Visibility.Visible)
 
         'Java 可能在版本设置被修改，所以总是重新加载（反正其他的 Refresh 也不太吃性能）
@@ -566,6 +567,101 @@ PreFin:
     Private Sub ComboAiModel_TextChanged(sender As Object, e As TextChangedEventArgs) Handles ComboAiModel.TextChanged
         If AiPanelRefreshing Then Return
         Settings.Set("AiModel", ComboAiModel.Text.Trim())
+    End Sub
+
+#End Region
+
+#Region "插件"
+
+    '刷新插件列表期间不把 Checked 的变化写回状态文件
+    Private PluginsRefreshing As Boolean = False
+
+    ''' <summary>
+    ''' 刷新插件列表显示。
+    ''' </summary>
+    Public Sub RefreshPlugins()
+        If PanPlugins Is Nothing Then Return
+        Try
+            PluginsRefreshing = True
+            PanPlugins.Children.Clear()
+            Dim EntryList As List(Of Plugin.PluginEntry) = Plugin.PluginManager.GetPlugins()
+            If EntryList.Count = 0 Then
+                PanPlugins.Children.Add(New TextBlock With {
+                    .Text = "暂无插件，把插件文件夹放进 Plugins 目录后重启即可",
+                    .FontSize = 12,
+                    .Opacity = 0.7,
+                    .TextWrapping = TextWrapping.Wrap
+                })
+                Return
+            End If
+            For Each Entry As Plugin.PluginEntry In EntryList
+                Dim Row As New Grid With {.Margin = New Thickness(0, 0, 0, 10)}
+                Row.ColumnDefinitions.Add(New ColumnDefinition With {.Width = New GridLength(1, GridUnitType.Star)})
+                Row.ColumnDefinitions.Add(New ColumnDefinition With {.Width = GridLength.Auto})
+                '插件名称与版本、作者
+                Dim Info As New StackPanel
+                Info.Children.Add(New TextBlock With {.Text = If(String.IsNullOrEmpty(Entry.Name), Entry.Id, Entry.Name)})
+                Dim DetailParts As New List(Of String)
+                If Not String.IsNullOrEmpty(Entry.Version) Then DetailParts.Add("版本 " & Entry.Version)
+                If Not String.IsNullOrEmpty(Entry.Author) Then DetailParts.Add("作者 " & Entry.Author)
+                Info.Children.Add(New TextBlock With {
+                    .Text = If(DetailParts.Count = 0, "版本未知 / 作者未知", String.Join(" / ", DetailParts)),
+                    .FontSize = 11,
+                    .Opacity = 0.7,
+                    .Margin = New Thickness(0, 2, 0, 0)
+                })
+                If Not String.IsNullOrEmpty(Entry.ErrorMessage) Then
+                    Info.Children.Add(New TextBlock With {
+                        .Text = "加载失败：" & Entry.ErrorMessage,
+                        .FontSize = 11,
+                        .Foreground = New SolidColorBrush(Color.FromRgb(&HCE, &H21, &H11)),
+                        .TextWrapping = TextWrapping.Wrap,
+                        .Margin = New Thickness(0, 2, 0, 0)
+                    })
+                End If
+                Row.Children.Add(Info)
+                '启用开关
+                Dim Check As New MyCheckBox With {
+                    .Text = "启用",
+                    .Height = 22,
+                    .VerticalAlignment = VerticalAlignment.Center,
+                    .Checked = Entry.Enabled
+                }
+                AddHandler Check.Change,
+                Sub(Sender As Object, User As Boolean)
+                    If PluginsRefreshing Then Return
+                    Dim Box As MyCheckBox = DirectCast(Sender, MyCheckBox)
+                    Plugin.PluginManager.SetPluginEnabled(Entry.Id, Box.Checked)
+                    Hint("插件开关已保存，重启后生效！")
+                End Sub
+                Grid.SetColumn(Check, 1)
+                Row.Children.Add(Check)
+                PanPlugins.Children.Add(Row)
+            Next
+        Catch ex As Exception
+            Logger.Error(ex, "刷新插件列表失败")
+        Finally
+            PluginsRefreshing = False
+        End Try
+    End Sub
+
+    Private Sub BtnPluginFolder_Click(sender As Object, e As MouseButtonEventArgs) Handles BtnPluginFolder.Click
+        Try
+            DirectoryUtils.Create(Plugin.PluginManager.PluginFolder)
+            OpenExplorer(Plugin.PluginManager.PluginFolder)
+        Catch ex As Exception
+            Logger.Error(ex, "打开插件文件夹失败")
+        End Try
+    End Sub
+
+    Private Sub BtnPluginRescan_Click(sender As Object, e As MouseButtonEventArgs) Handles BtnPluginRescan.Click
+        Try
+            Plugin.PluginManager.LoadAll()
+            RefreshPlugins()
+            Hint("插件列表已重新扫描！", HintType.Green)
+        Catch ex As Exception
+            Logger.Error(ex, "重新扫描插件失败")
+        End Try
     End Sub
 
 #End Region

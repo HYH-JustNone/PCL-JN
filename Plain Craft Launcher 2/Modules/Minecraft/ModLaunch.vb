@@ -140,6 +140,12 @@ Public Module ModLaunch
                 Logger.Warn(ex, "Mod 自检失败")
             End Try
         End If
+        'PCL-JN：通知插件即将启动游戏
+        Try
+            Plugin.PluginManager.RaiseGameLaunching(McInstanceSelected.Name)
+        Catch ex As Exception
+            Logger.Warn(ex, "插件处理游戏启动事件失败")
+        End Try
         Dim IsSavingBatch As Boolean = CurrentLaunchOptions?.SaveBatch IsNot Nothing
 
         '正式加载

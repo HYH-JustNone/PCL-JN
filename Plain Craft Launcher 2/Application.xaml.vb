@@ -134,6 +134,12 @@ RetryCacheCheck:
             Logger.Info($"第一阶段加载用时：{GetTimeMs() - ApplicationStartTick} ms")
             ApplicationStartTick = GetTimeMs()
             AniControlEnabled += 1
+            '加载插件
+            Try
+                Plugin.PluginManager.LoadAll()
+            Catch ex As Exception
+                Logger.Warn(ex, "加载插件失败")
+            End Try
         Catch ex As Exception
             Dim FilePath As String = Nothing
             Try

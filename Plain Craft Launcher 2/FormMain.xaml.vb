@@ -641,6 +641,8 @@ Public Class FormMain
         On Error Resume Next
         IsProgramEnding = True
         AniControlEnabled += 1
+        '卸载插件（本方法已启用 On Error Resume Next，插件内部也会逐个捕获异常）
+        Plugin.PluginManager.UnloadAll()
         If IsUpdateWaitingRestart Then UpdateRestart(False)
         If ReturnCode = ProcessReturnValues.Exception Then
             If Not IsLogShown Then

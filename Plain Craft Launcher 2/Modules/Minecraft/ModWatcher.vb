@@ -117,6 +117,7 @@ Public Module ModWatcher
 
         '状态
         Private _State As MinecraftState = MinecraftState.Loading
+        Private ExitEventRaised As Boolean = False
         Public Property State As MinecraftState
             Get
                 Return _State
@@ -159,6 +160,20 @@ Public Module ModWatcher
                 '游戏退出检查
                 If GameProcess.HasExited Then
                     WatcherLog("Minecraft 已退出，返回值：" & GameProcess.ExitCode)
+                    'PCL-JN：通知插件游戏已退出，同一进程只触发一次
+                    If Not ExitEventRaised Then
+                        ExitEventRaised = True
+                        Try
+                            Dim Code As Integer = 0
+                            Try
+                                Code = GameProcess.ExitCode
+                            Catch
+                            End Try
+                            Plugin.PluginManager.RaiseGameExited(Code)
+                        Catch ex As Exception
+                            Logger.Warn(ex, "插件处理游戏退出事件失败")
+                        End Try
+                    End If
                     'If Process.ExitCode = 1 Then
                     '    '返回值为 1，考虑是任务管理器结束
                     '    WatcherLog("Minecraft 返回值为 1，考虑为任务管理器结束") '并不，崩了照样是 1

@@ -10,6 +10,7 @@ PCL-JN 是基于 [Plain Craft Launcher 2（PCL）](https://github.com/Meloong-Gi
 - 补齐「百宝箱」页面：今日人品、内存优化、清理游戏垃圾、回声洞、自定义文件下载等
 - 标题栏徽标改为「PCL · JN」
 - 「关于与鸣谢」中补充本版本说明
+- 新增插件系统，可加载第三方 dll 插件扩展功能
 
 ## 构建方式
 
@@ -33,6 +34,72 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
 - 本项目完整保留原项目的版权声明、许可条款，以及「关于与鸣谢」页面中的原作者署名。
 - 二次分发本版本时，请同样遵守 `LICENCE`：保留署名、公开源代码、保留许可声明、界面主色相保持蓝色、不加入赞助解锁类功能、保留 Minecraft 正版购买劝导。
 - `LICENSE-PCL-JN`（MIT）只适用于本项目新添加的模块，不能用于替代或放宽 `LICENCE`。
+
+## 插件开发
+
+插件放在 `%AppData%\PCL\Plugins\<插件id>\` 目录中，每个插件文件夹需要包含 `plugin.json` 和入口 dll：
+
+```json
+{
+  "id": "my-plugin",
+  "name": "我的插件",
+  "version": "1.0.0",
+  "author": "你的名字",
+  "description": "插件说明",
+  "entry": "MyPlugin.dll"
+}
+```
+
+`id` 和 `entry` 为必填项。插件的启用状态保存在 `%AppData%\PCL\Plugins\plugins.json`，在设置页修改开关后需要重启启动器才会生效。
+
+创建一个面向 .NET Framework 4.8 的类库项目，引用 `Plain Craft Launcher 2.exe`，然后实现 `PCL.Plugin.IPlugin`：
+
+```vb
+Imports PCL.Plugin
+
+Public Class MyPlugin
+    Implements IPlugin
+
+    Private Context As IPluginContext
+
+    Public Sub OnLoad(Context As IPluginContext) Implements IPlugin.OnLoad
+        Me.Context = Context
+        Context.Log("我的插件已加载")
+        Context.ShowHint("我的插件已加载！")
+    End Sub
+
+    Public Sub OnUnload() Implements IPlugin.OnUnload
+        Context?.Log("我的插件已卸载")
+    End Sub
+
+    Public Sub OnGameLaunching(InstanceName As String) Implements IPlugin.OnGameLaunching
+        Context?.Log($"即将启动：{InstanceName}")
+    End Sub
+
+    Public Sub OnGameExited(ExitCode As Integer) Implements IPlugin.OnGameExited
+        Context?.Log($"游戏已退出，退出码：{ExitCode}")
+    End Sub
+
+End Class
+```
+
+可用的回调：
+
+- `OnLoad`：插件加载完成时调用
+- `OnGameLaunching`：游戏正式启动前调用，参数为版本名
+- `OnGameExited`：游戏进程退出后调用，参数为退出码
+- `OnUnload`：插件卸载或启动器退出时调用
+
+`IPluginContext` 提供的能力：
+
+- `PluginId`：插件 ID
+- `DataPath`：插件私有目录，可用于存放配置或缓存
+- `LauncherVersion`：当前启动器版本
+- `Log`：写入启动器日志
+- `ShowHint`：在启动器左下角显示提示
+- `GetSetting` / `SetSetting`：读写插件私有设置，保存在插件目录的 `settings.json` 中
+
+**警告：插件没有沙箱，拥有与本程序相同的权限。请只安装来源可信的插件，不要加载来路不明的 dll。**
 
 ## 相关链接
 
