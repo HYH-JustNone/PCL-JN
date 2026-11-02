@@ -1,3 +1,4 @@
+Imports System.CodeDom.Compiler
 Imports System.Reflection
 
 Namespace Plugin
@@ -168,9 +169,9 @@ Namespace Plugin
         ''' </summary>
         Private Sub LoadPlugin(Entry As PluginEntry, Folder As String)
             Try
-                Dim DllPath As String = Path.Combine(Folder, Entry.EntryFile)
-                If Not FileUtils.Exists(DllPath) Then Throw New FileNotFoundException($"找不到插件入口文件：{DllPath}")
-                Dim PluginAssembly As Assembly = Assembly.LoadFrom(DllPath)
+                Dim EntryPath As String = Path.Combine(Folder, Entry.EntryFile)
+                If Not FileUtils.Exists(EntryPath) Then Throw New FileNotFoundException($"找不到插件入口文件：{EntryPath}")
+                Dim PluginAssembly As Assembly = LoadPluginAssembly(EntryPath)
                 Dim AssemblyTypes As Type()
                 Try
                     AssemblyTypes = PluginAssembly.GetTypes()
@@ -208,6 +209,61 @@ Namespace Plugin
                 Logger.Warn(ex, $"加载插件 {Entry.Id} 失败")
             End Try
         End Sub
+
+        ''' <summary>
+        ''' 加载插件入口文件：.dll 直接加载，.vb / .cs 在运行时编译后加载。
+        ''' </summary>
+        Private Function LoadPluginAssembly(EntryPath As String) As Assembly
+            Select Case Path.GetExtension(EntryPath).ToLowerInvariant()
+                Case ".dll"
+                    Return Assembly.LoadFrom(EntryPath)
+                Case ".vb", ".cs"
+                    Return CompileScript(EntryPath)
+                Case Else
+                    Throw New Exception($"不支持的插件入口类型：{Path.GetExtension(EntryPath)}（只支持 .dll / .vb / .cs）")
+            End Select
+        End Function
+
+        ''' <summary>
+        ''' 用 .NET 自带的 CodeDom 在运行时编译脚本插件，使用者不需要安装 SDK 或手动编译。
+        ''' </summary>
+        Private Function CompileScript(EntryPath As String) As Assembly
+            Dim Provider As CodeDomProvider
+            Select Case Path.GetExtension(EntryPath).ToLowerInvariant()
+                Case ".cs"
+                    Provider = New Microsoft.CSharp.CSharpCodeProvider()
+                Case Else
+                    Provider = New Microsoft.VisualBasic.VBCodeProvider()
+            End Select
+            Try
+                Dim Options As New CompilerParameters With {
+                    .GenerateInMemory = True,
+                    .GenerateExecutable = False,
+                    .IncludeDebugInformation = False,
+                    .TreatWarningsAsErrors = False
+                }
+                '插件必须能引用启动器本体，才能使用 PCL.Plugin 下的接口
+                Options.ReferencedAssemblies.Add(GetType(IPlugin).Assembly.Location)
+                For Each AssemblyNameText As String In {"System.dll", "System.Core.dll", "System.Xml.dll", "System.Drawing.dll", "System.Windows.Forms.dll"}
+                    Options.ReferencedAssemblies.Add(AssemblyNameText)
+                Next
+                Dim Result As CompilerResults = Provider.CompileAssemblyFromFile(Options, EntryPath)
+                If Result.Errors.HasErrors Then
+                    Dim Messages As New List(Of String)
+                    For Each Item As CompilerError In Result.Errors
+                        If Item.IsWarning Then Continue For
+                        Messages.Add($"第 {Item.Line} 行：{Item.ErrorText}")
+                        If Messages.Count >= 3 Then Exit For
+                    Next
+                    Throw New Exception("脚本编译失败：" & Messages.Join("；") &
+                                        "（提示：脚本使用 .NET Framework 自带的旧版编译器，不支持 ?.、$\"\" 等较新语法）")
+                End If
+                Logger.Info($"已编译脚本插件：{EntryPath}")
+                Return Result.CompiledAssembly
+            Finally
+                Provider.Dispose()
+            End Try
+        End Function
 
         ''' <summary>
         ''' 设置插件是否启用。仅在状态文件中记录，需要重启后才会生效。

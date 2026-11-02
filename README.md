@@ -10,7 +10,7 @@ PCL-JN 是基于 [Plain Craft Launcher 2（PCL）](https://github.com/Meloong-Gi
 - 补齐「百宝箱」页面：今日人品、内存优化、清理游戏垃圾、回声洞、自定义文件下载等
 - 标题栏徽标改为「PCL · JN」
 - 「关于与鸣谢」中补充本版本说明
-- 新增插件系统，可加载第三方 dll 插件扩展功能
+- 新增插件系统，支持脚本插件与 dll 插件，无需编译即可扩展功能
 
 ## 构建方式
 
@@ -37,7 +37,16 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
 
 ## 插件开发
 
-插件放在 `%AppData%\PCL\Plugins\<插件id>\` 目录中，每个插件文件夹需要包含 `plugin.json` 和入口 dll：
+插件放在 `%AppData%\PCL\Plugins\<插件id>\`，一个插件就是一个文件夹：`plugin.json` + 入口文件。
+
+入口文件支持三种：
+
+| 扩展名 | 说明 |
+| --- | --- |
+| `.vb` / `.cs` | **脚本插件**，启动器启动时自动编译，不需要安装 SDK，也不需要手动编译（推荐） |
+| `.dll` | 预编译插件，适合需要引用其它第三方库的场景 |
+
+`plugin.json` 示例：
 
 ```json
 {
@@ -46,13 +55,15 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
   "version": "1.0.0",
   "author": "你的名字",
   "description": "插件说明",
-  "entry": "MyPlugin.dll"
+  "entry": "plugin.vb"
 }
 ```
 
 `id` 和 `entry` 为必填项。插件的启用状态保存在 `%AppData%\PCL\Plugins\plugins.json`，在设置页修改开关后需要重启启动器才会生效。
 
-创建一个面向 .NET Framework 4.8 的类库项目，引用 `Plain Craft Launcher 2.exe`，然后实现 `PCL.Plugin.IPlugin`：
+### 写一个脚本插件（不用编译）
+
+新建 `plugin.vb`，直接用记事本写就行：
 
 ```vb
 Imports PCL.Plugin
@@ -69,28 +80,52 @@ Public Class MyPlugin
     End Sub
 
     Public Sub OnUnload() Implements IPlugin.OnUnload
-        Context?.Log("我的插件已卸载")
     End Sub
 
     Public Sub OnGameLaunching(InstanceName As String) Implements IPlugin.OnGameLaunching
-        Context?.Log($"即将启动：{InstanceName}")
+        If Context IsNot Nothing Then Context.Log("即将启动：" & InstanceName)
     End Sub
 
     Public Sub OnGameExited(ExitCode As Integer) Implements IPlugin.OnGameExited
-        Context?.Log($"游戏已退出，退出码：{ExitCode}")
+        If Context IsNot Nothing Then Context.Log("游戏已退出，退出码：" & ExitCode)
     End Sub
 
 End Class
 ```
 
-可用的回调：
+也可以写成 `plugin.cs`（C#）：
+
+```csharp
+using PCL.Plugin;
+
+public class MyPlugin : IPlugin
+{
+    private IPluginContext _context;
+
+    public void OnLoad(IPluginContext context)
+    {
+        _context = context;
+        context.Log("我的插件已加载");
+    }
+
+    public void OnUnload() { }
+    public void OnGameLaunching(string instanceName) { }
+    public void OnGameExited(int exitCode) { }
+}
+```
+
+保存后重启启动器即可生效。脚本编译失败时不会影响启动器，错误信息（第几行、什么错）会显示在 设置 → 启动 → 插件 里。
+
+> 脚本由 .NET Framework 自带的编译器编译，语法级别相当于 **C# 5 / VB 12**：不要使用 `?.`、`$""` 字符串插值、`nameof`、`async/await` 之外的新特性，否则会编译失败。需要现代语法或引用其它第三方库时，请改用预编译的 `.dll` 插件。
+
+### 可用的回调
 
 - `OnLoad`：插件加载完成时调用
 - `OnGameLaunching`：游戏正式启动前调用，参数为版本名
 - `OnGameExited`：游戏进程退出后调用，参数为退出码
 - `OnUnload`：插件卸载或启动器退出时调用
 
-`IPluginContext` 提供的能力：
+### IPluginContext 提供的能力
 
 - `PluginId`：插件 ID
 - `DataPath`：插件私有目录，可用于存放配置或缓存
@@ -99,7 +134,7 @@ End Class
 - `ShowHint`：在启动器左下角显示提示
 - `GetSetting` / `SetSetting`：读写插件私有设置，保存在插件目录的 `settings.json` 中
 
-**警告：插件没有沙箱，拥有与本程序相同的权限。请只安装来源可信的插件，不要加载来路不明的 dll。**
+**警告：插件没有沙箱，拥有与本程序相同的权限。请只安装来源可信的插件，不要加载来路不明的脚本或 dll。**
 
 ## 相关链接
 
