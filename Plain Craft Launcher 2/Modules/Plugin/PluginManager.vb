@@ -1,4 +1,4 @@
-Imports System.CodeDom.Compiler
+﻿Imports System.CodeDom.Compiler
 Imports System.Diagnostics
 Imports System.Reflection
 Imports System.Threading
@@ -129,6 +129,10 @@ Namespace Plugin
         ''' </summary>
         Public Property UpdateUrl As String = ""
         ''' <summary>
+        ''' 支持的平台，例如 win-x64。为空表示不限制。
+        ''' </summary>
+        Public Property Platforms As New List(Of String)
+        ''' <summary>
         ''' 插件所在文件夹。
         ''' </summary>
         Public Property Folder As String = ""
@@ -141,6 +145,22 @@ Namespace Plugin
         Public Property PluginId As String = ""
         Public Property Text As String = ""
         Public Property Callback As Action
+    End Class
+
+    ''' <summary>
+    ''' 插件市场条目。
+    ''' </summary>
+    Public Class MarketPlugin
+        Public Property Id As String = ""
+        Public Property Name As String = ""
+        Public Property Version As String = ""
+        Public Property Description As String = ""
+        Public Property Author As String = ""
+        Public Property DownloadUrl As String = ""
+        Public Property Sha256 As String = ""
+        Public Property SizeBytes As Long = 0
+        Public Property Permissions As New List(Of String)
+        Public Property Platforms As New List(Of String)
     End Class
 
     ''' <summary>
@@ -193,6 +213,12 @@ Namespace Plugin
                     '第二遍：检查依赖后加载
                     For Each Entry As PluginEntry In PluginEntries.ToList()
                         If Not Entry.Enabled Then Continue For
+                        '平台校验
+                        If Entry.Platforms.Count > 0 AndAlso Not Entry.Platforms.Any(Function(P) String.Equals(P, CurrentPlatform, StringComparison.OrdinalIgnoreCase)) Then
+                            Entry.ErrorMessage = $"该插件不支持当前平台（{CurrentPlatform}）"
+                            Logger.Warn($"插件 {Entry.Id} 未加载：{Entry.ErrorMessage}")
+                            Continue For
+                        End If
                         Dim Missing As New List(Of String)
                         For Each RequiredId As String In Entry.Requires
                             If Not PluginEntries.Any(Function(E) String.Equals(E.Id, RequiredId, StringComparison.OrdinalIgnoreCase)) Then Missing.Add(RequiredId)
@@ -256,6 +282,8 @@ Namespace Plugin
                         Entry.Requires.Add(Item.ToString().Trim())
                     Next
                 End If
+                '读取平台声明
+                CollectStrings(Meta("platform"), Entry.Platforms)
             Catch ex As Exception
                 Logger.Warn(ex, $"读取插件信息失败：{MetaFile}")
                 Return
@@ -1203,7 +1231,8 @@ Namespace Plugin
                         .Permissions = New List(Of String)(E.Permissions),
                         .Requires = New List(Of String)(E.Requires),
                         .UpdateUrl = E.UpdateUrl,
-                        .Folder = E.Folder
+                        .Folder = E.Folder,
+                        .Platforms = New List(Of String)(E.Platforms)
                     }).ToList()
             End SyncLock
         End Function
@@ -1226,6 +1255,201 @@ Namespace Plugin
                 Return MenuItems.Where(Function(M) String.Equals(M.PluginId, PluginId, StringComparison.OrdinalIgnoreCase)).ToList()
             End SyncLock
         End Function
+
+        ''' <summary>
+        ''' 当前平台标识，用于插件包兼容性判断。
+        ''' </summary>
+        Public ReadOnly Property CurrentPlatform As String
+            Get
+                Try
+                    Dim Arch As String = Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant()
+                    If Arch = "arm64" Then Return "win-arm64"
+                    If Arch = "x86" Then Return "win-x86"
+                    Return "win-x64"
+                Catch
+                    Return If(Environment.Is64BitProcess, "win-x64", "win-x86")
+                End Try
+            End Get
+        End Property
+
+        Private Sub CollectStrings(Token As JToken, Target As List(Of String))
+            If Token Is Nothing OrElse Token.Type <> JTokenType.Array Then Return
+            For Each Item As JToken In CType(Token, JArray)
+                Target.Add(Item.ToString().Trim())
+            Next
+        End Sub
+
+        ''' <summary>
+        ''' 插件市场索引地址。
+        ''' </summary>
+        Public Const MarketUrl As String = "https://raw.githubusercontent.com/HYH-JustNone/PCL-JN/dev/plugins/index.json"
+
+        Private ReadOnly Property MarketCacheFile As String
+            Get
+                Return PluginFolder & ".market-cache.json"
+            End Get
+        End Property
+
+        ''' <summary>
+        ''' 获取插件市场列表。默认优先使用 6 小时内的缓存，ForceRefresh 为 True 时强制联网。
+        ''' </summary>
+        Public Function GetMarketPlugins(Optional ForceRefresh As Boolean = False) As List(Of MarketPlugin)
+            Dim Result As New List(Of MarketPlugin)
+            Try
+                Dim Text As String = ""
+                If Not ForceRefresh AndAlso FileUtils.Exists(MarketCacheFile) Then
+                    Try
+                        If Date.Now - FileUtils.GetInfo(MarketCacheFile).LastWriteTime < TimeSpan.FromHours(6) Then
+                            Text = FileUtils.ReadAsString(MarketCacheFile)
+                        End If
+                    Catch
+                    End Try
+                End If
+                If String.IsNullOrWhiteSpace(Text) Then
+                    Net.ServicePointManager.SecurityProtocol = Net.SecurityProtocolType.Tls12
+                    Using Client As New Net.Http.HttpClient()
+                        Client.Timeout = TimeSpan.FromSeconds(15)
+                        Client.DefaultRequestHeaders.UserAgent.ParseAdd("PCL-JN/1.0")
+                        Text = Client.GetStringAsync(MarketUrl).Result
+                    End Using
+                    Try
+                        DirectoryUtils.Create(PluginFolder)
+                        FileUtils.Write(MarketCacheFile, Text)
+                    Catch
+                    End Try
+                End If
+                Dim Root As JObject = TryCast(Text.DeserializeJson(), JObject)
+                Dim Items As JArray = Nothing
+                If Root IsNot Nothing Then Items = TryCast(Root("plugins"), JArray)
+                If Items Is Nothing Then Return Result
+                For Each Token As JToken In Items
+                    Dim Item As JObject = TryCast(Token, JObject)
+                    If Item Is Nothing Then Continue For
+                    Dim Entry As New MarketPlugin With {
+                        .Id = GetJsonString(Item, "id").Trim(),
+                        .Name = GetJsonString(Item, "name").Trim(),
+                        .Version = GetJsonString(Item, "version").Trim(),
+                        .Description = GetJsonString(Item, "description").Trim(),
+                        .Author = GetJsonString(Item, "author").Trim(),
+                        .DownloadUrl = GetJsonString(Item, "download").Trim(),
+                        .Sha256 = GetJsonString(Item, "sha256").Trim()
+                    }
+                    If Entry.Id = "" OrElse Entry.DownloadUrl = "" Then Continue For
+                    If String.IsNullOrEmpty(Entry.Name) Then Entry.Name = Entry.Id
+                    CollectStrings(Item("permissions"), Entry.Permissions)
+                    CollectStrings(Item("platform"), Entry.Platforms)
+                    Try
+                        Dim SizeToken As JToken = Item("size")
+                        If SizeToken IsNot Nothing Then Entry.SizeBytes = SizeToken.ToObject(Of Long)()
+                    Catch
+                    End Try
+                    Result.Add(Entry)
+                Next
+            Catch ex As Exception
+                Logger.Warn(ex, "获取插件市场列表失败")
+            End Try
+            Return Result
+        End Function
+
+        ''' <summary>
+        ''' 从市场条目下载并安装插件，返回插件 id。失败抛出带说明的异常。
+        ''' </summary>
+        Public Function InstallFromMarket(Item As MarketPlugin) As String
+            If Item Is Nothing OrElse Item.DownloadUrl = "" Then Throw New Exception("插件地址为空")
+            Dim TempFile As String = Path.Combine(Path.GetTempPath(), "PCL-JN-" & Guid.NewGuid().ToString("N") & ".pjnp")
+            Try
+                Net.ServicePointManager.SecurityProtocol = Net.SecurityProtocolType.Tls12
+                Using Client As New Net.Http.HttpClient()
+                    Client.Timeout = TimeSpan.FromSeconds(120)
+                    Client.DefaultRequestHeaders.UserAgent.ParseAdd("PCL-JN/1.0")
+                    System.IO.File.WriteAllBytes(TempFile, Client.GetByteArrayAsync(Item.DownloadUrl).Result)
+                End Using
+                If Item.Sha256 <> "" Then
+                    Dim Actual As String = CryptographyUtils.ComputeFileHash(TempFile, CryptographyUtils.HashMethod.Sha256)
+                    If Not String.Equals(Actual, Item.Sha256, StringComparison.OrdinalIgnoreCase) Then
+                        Throw New Exception("SHA256 校验失败，文件可能被篡改")
+                    End If
+                End If
+                Return InstallPluginPackage(TempFile)
+            Finally
+                Try
+                    If System.IO.File.Exists(TempFile) Then System.IO.File.Delete(TempFile)
+                Catch
+                End Try
+            End Try
+        End Function
+
+        ''' <summary>
+        ''' 安装 .pjnp 插件包（zip 结构），返回插件 id。失败抛出带说明的异常。
+        ''' </summary>
+        Public Function InstallPluginPackage(PackagePath As String) As String
+            If Not FileUtils.Exists(PackagePath) Then Throw New Exception("找不到插件包：" & PackagePath)
+            Dim Extension As String = Path.GetExtension(PackagePath).ToLowerInvariant()
+            If Extension <> ".pjnp" AndAlso Extension <> ".zip" Then Throw New Exception("不支持的插件包格式：" & Extension & "（应为 .pjnp）")
+            DirectoryUtils.Create(PluginFolder)
+            Dim TempFolder As String = Path.Combine(Path.GetTempPath(), "PCL-JN-Plugin-" & Guid.NewGuid().ToString("N"))
+            Try
+                DirectoryUtils.Create(TempFolder)
+                FileUtils.ExtractToDirectory(PackagePath, TempFolder)
+                Dim MetaFile As String = Path.Combine(TempFolder, "plugin.json")
+                If Not FileUtils.Exists(MetaFile) Then
+                    '兼容压缩包里多套一层文件夹的情况
+                    Dim SubFolders As List(Of String) = DirectoryUtils.EnumerateDirectories(TempFolder).ToList()
+                    If SubFolders.Count = 1 AndAlso FileUtils.Exists(Path.Combine(SubFolders(0), "plugin.json")) Then
+                        TempFolder = SubFolders(0)
+                        MetaFile = Path.Combine(TempFolder, "plugin.json")
+                    Else
+                        Throw New Exception("插件包内缺少 plugin.json")
+                    End If
+                End If
+                Dim Meta As JObject = ReadJsonObject(MetaFile)
+                Dim Id As String = GetJsonString(Meta, "id").Trim()
+                If Id = "" Then Throw New Exception("plugin.json 缺少 id")
+                If Id.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 Then Throw New Exception("插件 id 含有非法字符")
+                Dim Platforms As New List(Of String)
+                CollectStrings(Meta("platform"), Platforms)
+                If Platforms.Count > 0 AndAlso Not Platforms.Any(Function(P) String.Equals(P, CurrentPlatform, StringComparison.OrdinalIgnoreCase)) Then
+                    Throw New Exception($"该插件不支持当前平台（{CurrentPlatform}）")
+                End If
+                Dim Target As String = Path.Combine(PluginFolder, Id)
+                If DirectoryUtils.Exists(Target) Then Throw New Exception("已存在同名插件，请先删除旧版本")
+                System.IO.Directory.Move(TempFolder, Target)
+                TempFolder = "" '已移动，无需清理
+                Logger.Info($"已安装插件包：{Id}")
+                Return Id
+            Finally
+                If TempFolder <> "" AndAlso DirectoryUtils.Exists(TempFolder) Then
+                    Try
+                        System.IO.Directory.Delete(TempFolder, True)
+                    Catch
+                    End Try
+                End If
+            End Try
+        End Function
+
+        ''' <summary>
+        ''' 删除插件目录（不可恢复），同时卸载其运行时实例。
+        ''' </summary>
+        Public Sub RemovePlugin(Id As String)
+            SyncLock PluginLock
+                Dim Entry As PluginEntry = PluginEntries.FirstOrDefault(Function(E) String.Equals(E.Id, Id, StringComparison.OrdinalIgnoreCase))
+                If Entry Is Nothing Then Return
+                Dim Record As PluginRecord = LoadedPlugins.FirstOrDefault(Function(R) String.Equals(R.Entry.Id, Id, StringComparison.OrdinalIgnoreCase))
+                If Record IsNot Nothing Then
+                    Try
+                        Record.Instance.OnUnload()
+                    Catch
+                    End Try
+                    LoadedPlugins.Remove(Record)
+                End If
+                PluginEntries.Remove(Entry)
+                SyncLock MenuLock
+                    MenuItems.RemoveAll(Function(M) String.Equals(M.PluginId, Id, StringComparison.OrdinalIgnoreCase))
+                End SyncLock
+                If DirectoryUtils.Exists(Entry.Folder) Then System.IO.Directory.Delete(Entry.Folder, True)
+            End SyncLock
+            Logger.Info($"已删除插件：{Id}")
+        End Sub
 
         ''' <summary>
         ''' 转发游戏启动事件。

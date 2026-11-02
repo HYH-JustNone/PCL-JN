@@ -58,6 +58,7 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
   "description": "插件说明",
   "entry": "plugin.lua",
   "permissions": ["network", "file"],
+  "platform": ["win-x64"],
   "requires": [],
   "update": "https://example.com/my-plugin/version.json"
 }
@@ -75,9 +76,47 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
 
 不声明就调不通对应接口——这是给用户看的"这个插件想干什么"。
 
-`requires` 可声明依赖的其它插件 id，缺少依赖时会拒绝加载并在设置页显示原因。`update` 填一个返回 `{"version":"1.2.0"}` 的地址，启动时会自动检查并提示新版本（不会自动更新）。
+`requires` 可声明依赖的其它插件 id，缺少依赖时会拒绝加载并在设置页显示原因。`update` 填一个返回 `{"version":"1.2.0"}` 的地址，启动时会自动检查并提示新版本（不会自动更新）。`platform` 可限定平台（`win-x64` / `win-arm64` / `win-x86`），留空表示不限制。
 
 每个插件还有自己的日志：`Plugins\<id>\log.txt`，`pcl.Log` 会同时写进去。
+
+### 插件包与插件市场
+
+插件可以打包成 `.pjnp` 文件（本质是 zip），结构如下：
+
+```
+my-plugin.pjnp
+├─ plugin.json
+├─ plugin.lua
+└─ （其它资源）
+```
+
+设置页「安装插件包」选择 `.pjnp` 即可自动解压到 `Plugins\<id>\`；「浏览插件」会读取插件市场索引，支持搜索与一键安装（下载后校验 SHA256）。
+
+市场索引是一个 JSON：
+
+```json
+{
+  "plugins": [
+    {
+      "id": "startup-counter",
+      "name": "启动计数器",
+      "version": "1.0.0",
+      "author": "just_none",
+      "description": "记录每个版本启动了多少次",
+      "permissions": ["file"],
+      "platform": ["win-x64"],
+      "download": "https://example.com/startup-counter.pjnp",
+      "sha256": "……",
+      "size": 12345
+    }
+  ]
+}
+```
+
+默认索引地址是 `https://raw.githubusercontent.com/HYH-JustNone/PCL-JN/dev/plugins/index.json`，结果会缓存 6 小时，可在界面里点「刷新」强制更新。
+
+插件加载失败时，列表里会给出「禁用 / 删除 / 打开目录」三个操作，方便直接处理坏掉的插件。
 
 ### 写一个 Lua 脚本插件（推荐）
 

@@ -1,4 +1,4 @@
-Public Class PageSetupLaunch
+﻿Public Class PageSetupLaunch
 
     Private Sub PageSetupLaunch_Loaded(sender As Object, e As RoutedEventArgs) Handles Me.Loaded
         '重复加载部分
@@ -675,6 +675,38 @@ PreFin:
                     Next
                     PanPlugins.Children.Add(MenuPanel)
                 End If
+                '加载失败时的恢复操作
+                Dim CapturedEntry As Plugin.PluginEntry = Entry
+                If Not CapturedEntry.Loaded AndAlso Not String.IsNullOrEmpty(CapturedEntry.ErrorMessage) Then
+                    Dim FixPanel As New StackPanel With {.Orientation = Orientation.Horizontal, .Margin = New Thickness(0, 2, 0, 10)}
+                    Dim BtnDisableOne As New MyButton With {.Text = "禁用", .Height = 26, .Padding = New Thickness(11, 0, 11, 0), .Margin = New Thickness(0, 0, 8, 0)}
+                    AddHandler BtnDisableOne.Click,
+                    Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
+                        Plugin.PluginManager.SetPluginEnabled(CapturedEntry.Id, False)
+                        Hint("插件已禁用，重启后生效")
+                    End Sub
+                    FixPanel.Children.Add(BtnDisableOne)
+                    Dim BtnDeleteOne As New MyButton With {.Text = "删除", .Height = 26, .Padding = New Thickness(11, 0, 11, 0), .Margin = New Thickness(0, 0, 8, 0)}
+                    AddHandler BtnDeleteOne.Click,
+                    Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
+                        If MyMsgBox("确定删除插件「" & CapturedEntry.Name & "」吗？" & vbCrLf & "插件文件夹会被永久删除，无法恢复。", "删除插件", "删除", "取消") <> 1 Then Return
+                        Try
+                            Plugin.PluginManager.RemovePlugin(CapturedEntry.Id)
+                            RefreshPlugins()
+                            Hint("插件已删除", HintType.Green)
+                        Catch ex As Exception
+                            Hint("删除失败：" & ex.Message, HintType.Red)
+                        End Try
+                    End Sub
+                    FixPanel.Children.Add(BtnDeleteOne)
+                    Dim BtnOpenOne As New MyButton With {.Text = "打开目录", .Height = 26, .Padding = New Thickness(11, 0, 11, 0)}
+                    AddHandler BtnOpenOne.Click,
+                    Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
+                        If DirectoryUtils.Exists(CapturedEntry.Folder) Then OpenExplorer(CapturedEntry.Folder)
+                    End Sub
+                    FixPanel.Children.Add(BtnOpenOne)
+                    PanPlugins.Children.Add(FixPanel)
+                End If
             Next
         Catch ex As Exception
             Logger.Error(ex, "刷新插件列表失败")
@@ -700,6 +732,139 @@ PreFin:
         Catch ex As Exception
             Logger.Error(ex, "重新扫描插件失败")
         End Try
+    End Sub
+
+    '安装本地 .pjnp 插件包
+    Private Sub BtnPluginInstall_Click(sender As Object, e As MouseButtonEventArgs) Handles BtnPluginInstall.Click
+        Dim FileName As String = Dialogs.SelectFile("选择插件包", False, filter:={({"pjnp"}, "PCL-JN 插件包")}).FirstOrDefault()
+        If String.IsNullOrEmpty(FileName) Then Return
+        Try
+            Dim Id As String = Plugin.PluginManager.InstallPluginPackage(FileName)
+            Plugin.PluginManager.LoadAll()
+            RefreshPlugins()
+            Hint($"插件已安装：{Id}，重启后生效", HintType.Green)
+        Catch ex As Exception
+            Hint("安装失败：" & ex.Message, HintType.Red)
+        End Try
+    End Sub
+
+    '插件市场
+    Private PluginMarketList As New List(Of Plugin.MarketPlugin)
+    Private PluginMarketLoading As Boolean = False
+
+    Private Sub BtnPluginMarket_Click(sender As Object, e As MouseButtonEventArgs) Handles BtnPluginMarket.Click
+        If PanPluginMarket.Visibility = Visibility.Visible Then
+            PanPluginMarket.Visibility = Visibility.Collapsed
+            Return
+        End If
+        PanPluginMarket.Visibility = Visibility.Visible
+        If PluginMarketList.Count = 0 Then LoadPluginMarket(False)
+    End Sub
+
+    Private Sub BtnPluginMarketClose_Click(sender As Object, e As MouseButtonEventArgs) Handles BtnPluginMarketClose.Click
+        PanPluginMarket.Visibility = Visibility.Collapsed
+    End Sub
+
+    Private Sub BtnPluginMarketRefresh_Click(sender As Object, e As MouseButtonEventArgs) Handles BtnPluginMarketRefresh.Click
+        LoadPluginMarket(True)
+    End Sub
+
+    Private Sub TextPluginSearch_TextChanged(sender As Object, e As TextChangedEventArgs) Handles TextPluginSearch.TextChanged
+        RenderPluginMarket()
+    End Sub
+
+    Private Sub LoadPluginMarket(ForceRefresh As Boolean)
+        If PluginMarketLoading Then Return
+        PluginMarketLoading = True
+        PanPluginMarketItems.Children.Clear()
+        PanPluginMarketItems.Children.Add(New TextBlock With {.Text = "正在获取插件列表……", .FontSize = 12, .Opacity = 0.7})
+        RunInNewThread(Sub()
+                           Dim List As List(Of Plugin.MarketPlugin) = Plugin.PluginManager.GetMarketPlugins(ForceRefresh)
+                           RunInUi(Sub()
+                                       PluginMarketList = List
+                                       PluginMarketLoading = False
+                                       RenderPluginMarket()
+                                       If List.Count = 0 Then Hint("插件列表为空或获取失败，请检查网络", HintType.Red)
+                                   End Sub)
+                       End Sub, "Plugin Market")
+    End Sub
+
+    Private Sub RenderPluginMarket()
+        If PanPluginMarketItems Is Nothing Then Return
+        PanPluginMarketItems.Children.Clear()
+        Dim Keyword As String = If(TextPluginSearch Is Nothing, "", TextPluginSearch.Text.Trim())
+        Dim Installed As List(Of Plugin.PluginEntry) = Plugin.PluginManager.GetPlugins()
+        Dim Shown As Integer = 0
+        For Each Item As Plugin.MarketPlugin In PluginMarketList
+            If Keyword <> "" AndAlso
+               Item.Name.IndexOf(Keyword, StringComparison.OrdinalIgnoreCase) < 0 AndAlso
+               Item.Description.IndexOf(Keyword, StringComparison.OrdinalIgnoreCase) < 0 AndAlso
+               Item.Id.IndexOf(Keyword, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            Shown += 1
+            Dim Row As New Grid With {.Margin = New Thickness(0, 0, 0, 8)}
+            Row.ColumnDefinitions.Add(New ColumnDefinition With {.Width = New GridLength(1, GridUnitType.Star)})
+            Row.ColumnDefinitions.Add(New ColumnDefinition With {.Width = GridLength.Auto})
+            Dim Info As New StackPanel
+            Info.Children.Add(New TextBlock With {.Text = Item.Name & "  " & Item.Version, .FontWeight = FontWeights.Bold})
+            Dim Detail As New List(Of String)
+            If Not String.IsNullOrEmpty(Item.Author) Then Detail.Add("作者 " & Item.Author)
+            If Item.Permissions.Count > 0 Then Detail.Add("权限 " & String.Join("、", Item.Permissions))
+            If Item.Platforms.Count > 0 Then Detail.Add("平台 " & String.Join("/", Item.Platforms))
+            Info.Children.Add(New TextBlock With {
+                .Text = If(Detail.Count = 0, "", String.Join(" / ", Detail)),
+                .FontSize = 11,
+                .Opacity = 0.7,
+                .Margin = New Thickness(0, 2, 0, 0)
+            })
+            If Not String.IsNullOrEmpty(Item.Description) Then
+                Info.Children.Add(New TextBlock With {
+                    .Text = Item.Description,
+                    .FontSize = 11,
+                    .Opacity = 0.8,
+                    .TextWrapping = TextWrapping.Wrap,
+                    .Margin = New Thickness(0, 3, 12, 0)
+                })
+            End If
+            Row.Children.Add(Info)
+            Dim IsInstalled As Boolean = Installed.Any(Function(E) String.Equals(E.Id, Item.Id, StringComparison.OrdinalIgnoreCase))
+            Dim InstallButton As New MyButton With {
+                .Text = If(IsInstalled, "已安装", "安装"),
+                .Height = 28,
+                .Padding = New Thickness(13, 0, 13, 0),
+                .VerticalAlignment = VerticalAlignment.Top
+            }
+            InstallButton.IsEnabled = Not IsInstalled
+            Dim Target As Plugin.MarketPlugin = Item
+            AddHandler InstallButton.Click, Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
+                                                InstallFromMarketWithConfirm(Target)
+                                            End Sub
+            Grid.SetColumn(InstallButton, 1)
+            Row.Children.Add(InstallButton)
+            PanPluginMarketItems.Children.Add(Row)
+        Next
+        If Shown = 0 Then
+            PanPluginMarketItems.Children.Add(New TextBlock With {.Text = "没有匹配的插件", .FontSize = 12, .Opacity = 0.6})
+        End If
+    End Sub
+
+    Private Sub InstallFromMarketWithConfirm(Item As Plugin.MarketPlugin)
+        Dim PermissionText As String = If(Item.Permissions.Count = 0, "无", String.Join("、", Item.Permissions))
+        If MyMsgBox("确定安装插件「" & Item.Name & "」吗？" & vbCrLf & vbCrLf &
+                    "版本：" & Item.Version & vbCrLf &
+                    "权限：" & PermissionText, "安装插件", "安装", "取消") <> 1 Then Return
+        RunInNewThread(Sub()
+                           Try
+                               Dim Id As String = Plugin.PluginManager.InstallFromMarket(Item)
+                               RunInUi(Sub()
+                                           Plugin.PluginManager.LoadAll()
+                                           RefreshPlugins()
+                                           RenderPluginMarket()
+                                           Hint($"插件已安装：{Id}，重启后生效", HintType.Green)
+                                       End Sub)
+                           Catch ex As Exception
+                               RunInUi(Sub() Hint("安装失败：" & ex.Message, HintType.Red))
+                           End Try
+                       End Sub, "Plugin Install")
     End Sub
 
 #End Region

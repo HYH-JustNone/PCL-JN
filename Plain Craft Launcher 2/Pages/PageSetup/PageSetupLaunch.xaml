@@ -403,6 +403,23 @@
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                         <local:MyButton x:Name="BtnPluginFolder" Text="打开插件文件夹" MinWidth="140" Padding="13,0" Margin="0,0,20,0" />
                         <local:MyButton x:Name="BtnPluginRescan" Text="重新扫描" MinWidth="140" Padding="13,0" />
+                        <local:MyButton x:Name="BtnPluginInstall" Text="安装插件包" MinWidth="140" Padding="13,0" Margin="20,0,0,0" />
+                        <local:MyButton x:Name="BtnPluginMarket" Text="浏览插件" MinWidth="140" Padding="13,0" Margin="20,0,0,0" />
+                    </StackPanel>
+                    <StackPanel x:Name="PanPluginMarket" Visibility="Collapsed" Margin="0,12,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <local:MyTextBox x:Name="TextPluginSearch" HintText="搜索插件名或描述" Height="28" />
+                            <local:MyButton x:Name="BtnPluginMarketRefresh" Grid.Column="1" Text="刷新" MinWidth="90" Padding="13,0" Margin="12,0,0,0" />
+                            <local:MyButton x:Name="BtnPluginMarketClose" Grid.Column="2" Text="收起" MinWidth="90" Padding="13,0" Margin="12,0,0,0" />
+                        </Grid>
+                        <local:MyScrollViewer MaxHeight="280" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,10,0,0">
+                            <StackPanel x:Name="PanPluginMarketItems" />
+                        </local:MyScrollViewer>
                     </StackPanel>
                 </StackPanel>
             </local:MyCard>
