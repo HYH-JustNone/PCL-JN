@@ -145,6 +145,10 @@
       <HintPath>Resources\Imazen.WebP.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="MoonSharp.Interpreter">
+      <HintPath>Resources\MoonSharp.Interpreter.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="NAudio, Version=1.7.3.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
       <HintPath>Resources\NAudio.dll</HintPath>

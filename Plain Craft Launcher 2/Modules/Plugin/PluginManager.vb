@@ -1,5 +1,6 @@
 Imports System.CodeDom.Compiler
 Imports System.Reflection
+Imports MoonSharp.Interpreter
 
 Namespace Plugin
 
@@ -171,33 +172,38 @@ Namespace Plugin
             Try
                 Dim EntryPath As String = Path.Combine(Folder, Entry.EntryFile)
                 If Not FileUtils.Exists(EntryPath) Then Throw New FileNotFoundException($"找不到插件入口文件：{EntryPath}")
-                Dim PluginAssembly As Assembly = LoadPluginAssembly(EntryPath)
-                Dim AssemblyTypes As Type()
-                Try
-                    AssemblyTypes = PluginAssembly.GetTypes()
-                Catch ex As ReflectionTypeLoadException
-                    '部分类型加载失败时，仍然尝试加载其余类型
-                    AssemblyTypes = ex.Types.Where(Function(T) T IsNot Nothing).ToArray()
-                End Try
-                Dim Instance As IPlugin = Nothing
-                For Each PluginType As Type In AssemblyTypes
-                    If PluginType Is Nothing OrElse Not PluginType.IsClass OrElse PluginType.IsAbstract Then Continue For
-                    '先判断是否实现了插件接口，避免去实例化 My.MyProject 之类的辅助类型
-                    If Not GetType(IPlugin).IsAssignableFrom(PluginType) Then Continue For
-                    Dim Created As Object
-                    Try
-                        Created = Activator.CreateInstance(PluginType)
-                    Catch ex As Exception
-                        Logger.Warn(ex, $"插件 {Entry.Id} 实例化类型 {PluginType.FullName} 失败")
-                        Continue For
-                    End Try
-                    If TypeOf Created Is IPlugin Then
-                        Instance = DirectCast(Created, IPlugin)
-                        Exit For
-                    End If
-                Next
-                If Instance Is Nothing Then Throw New Exception("未找到实现 PCL.Plugin.IPlugin 的公共类")
                 Dim Context As New PluginContext(Entry.Id, Path.Combine(PluginFolder, Entry.Id))
+                Dim Instance As IPlugin = Nothing
+                If Path.GetExtension(EntryPath).ToLowerInvariant() = ".lua" Then
+                    'Lua 脚本插件：由内置的 MoonSharp 解释器驱动
+                    Instance = New LuaPlugin(EntryPath, Context)
+                Else
+                    Dim PluginAssembly As Assembly = LoadPluginAssembly(EntryPath)
+                    Dim AssemblyTypes As Type()
+                    Try
+                        AssemblyTypes = PluginAssembly.GetTypes()
+                    Catch ex As ReflectionTypeLoadException
+                        '部分类型加载失败时，仍然尝试加载其余类型
+                        AssemblyTypes = ex.Types.Where(Function(T) T IsNot Nothing).ToArray()
+                    End Try
+                    For Each PluginType As Type In AssemblyTypes
+                        If PluginType Is Nothing OrElse Not PluginType.IsClass OrElse PluginType.IsAbstract Then Continue For
+                        '先判断是否实现了插件接口，避免去实例化 My.MyProject 之类的辅助类型
+                        If Not GetType(IPlugin).IsAssignableFrom(PluginType) Then Continue For
+                        Dim Created As Object
+                        Try
+                            Created = Activator.CreateInstance(PluginType)
+                        Catch ex As Exception
+                            Logger.Warn(ex, $"插件 {Entry.Id} 实例化类型 {PluginType.FullName} 失败")
+                            Continue For
+                        End Try
+                        If TypeOf Created Is IPlugin Then
+                            Instance = DirectCast(Created, IPlugin)
+                            Exit For
+                        End If
+                    Next
+                    If Instance Is Nothing Then Throw New Exception("未找到实现 PCL.Plugin.IPlugin 的公共类")
+                End If
                 Instance.OnLoad(Context)
                 Entry.Loaded = True
                 Entry.ErrorMessage = ""
@@ -264,6 +270,74 @@ Namespace Plugin
                 Provider.Dispose()
             End Try
         End Function
+
+        ''' <summary>
+        ''' Lua 脚本插件：脚本中定义全局函数 OnLoad / OnGameLaunching / OnGameExited / OnUnload，
+        ''' 并通过 pcl 表调用 Log、Hint、GetSetting 等功能。运行在硬沙箱中，无法访问文件系统与命令行。
+        ''' </summary>
+        Private Class LuaPlugin
+            Implements IPlugin
+
+            Private ReadOnly Engine As Script
+
+            Public Sub New(EntryPath As String, Context As IPluginContext)
+                Engine = New Script(CoreModules.Preset_HardSandbox)
+                '用纯 Lua 表 + 回调暴露 API，不把 .NET 对象直接丢给脚本，避免反射与类型转换问题
+                Dim Api As New Table(Engine)
+                Api.Set("Version", DynValue.NewString(Context.LauncherVersion))
+                Api.Set("Log", DynValue.NewCallback(Function(C, A) ApiLog(Context, A)))
+                Api.Set("Hint", DynValue.NewCallback(Function(C, A) ApiHint(Context, A, False)))
+                Api.Set("Warn", DynValue.NewCallback(Function(C, A) ApiHint(Context, A, True)))
+                Api.Set("GetSetting", DynValue.NewCallback(Function(C, A) ApiGetSetting(Context, A)))
+                Api.Set("SetSetting", DynValue.NewCallback(Function(C, A) ApiSetSetting(Context, A)))
+                Engine.Globals.Set("pcl", DynValue.NewTable(Api))
+                Engine.DoFile(EntryPath)
+            End Sub
+
+            Private Shared Function ArgText(Args As CallbackArguments) As String
+                If Args.Count <= 0 Then Return ""
+                Return Args(0).ToPrintString()
+            End Function
+            Private Shared Function ApiLog(Context As IPluginContext, Args As CallbackArguments) As DynValue
+                Context.Log(ArgText(Args))
+                Return DynValue.Nil
+            End Function
+            Private Shared Function ApiHint(Context As IPluginContext, Args As CallbackArguments, IsError As Boolean) As DynValue
+                Context.ShowHint(ArgText(Args), IsError)
+                Return DynValue.Nil
+            End Function
+            Private Shared Function ApiGetSetting(Context As IPluginContext, Args As CallbackArguments) As DynValue
+                Return DynValue.NewString(Context.GetSetting(ArgText(Args)))
+            End Function
+            Private Shared Function ApiSetSetting(Context As IPluginContext, Args As CallbackArguments) As DynValue
+                If Args.Count >= 2 Then Context.SetSetting(Args(0).ToPrintString(), Args(1).ToPrintString())
+                Return DynValue.Nil
+            End Function
+
+            '调用脚本里的全局函数；脚本没定义该函数时直接跳过
+            Private Sub CallScript(Name As String, ParamArray Args As Object())
+                Dim Target As DynValue = Engine.Globals.Get(Name)
+                If Target Is Nothing OrElse Target.Type <> DataType.Function Then Return
+                Dim Values As DynValue() = Args.Select(Function(A) DynValue.FromObject(Engine, A)).ToArray()
+                Engine.Call(Target, Values)
+            End Sub
+
+            Public Sub OnLoad(Context As IPluginContext) Implements IPlugin.OnLoad
+                CallScript("OnLoad")
+            End Sub
+
+            Public Sub OnUnload() Implements IPlugin.OnUnload
+                CallScript("OnUnload")
+            End Sub
+
+            Public Sub OnGameLaunching(InstanceName As String) Implements IPlugin.OnGameLaunching
+                CallScript("OnGameLaunching", InstanceName)
+            End Sub
+
+            Public Sub OnGameExited(ExitCode As Integer) Implements IPlugin.OnGameExited
+                CallScript("OnGameExited", ExitCode)
+            End Sub
+        End Class
 
         ''' <summary>
         ''' 设置插件是否启用。仅在状态文件中记录，需要重启后才会生效。

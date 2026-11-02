@@ -10,7 +10,7 @@ PCL-JN 是基于 [Plain Craft Launcher 2（PCL）](https://github.com/Meloong-Gi
 - 补齐「百宝箱」页面：今日人品、内存优化、清理游戏垃圾、回声洞、自定义文件下载等
 - 标题栏徽标改为「PCL · JN」
 - 「关于与鸣谢」中补充本版本说明
-- 新增插件系统，支持脚本插件与 dll 插件，无需编译即可扩展功能
+- 新增插件系统，支持 Lua 脚本、VB / C# 脚本与 dll 插件，无需编译即可扩展功能
 
 ## 构建方式
 
@@ -43,7 +43,8 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
 
 | 扩展名 | 说明 |
 | --- | --- |
-| `.vb` / `.cs` | **脚本插件**，启动器启动时自动编译，不需要安装 SDK，也不需要手动编译（推荐） |
+| `.lua` | **Lua 脚本**，语法简单，运行在沙箱中，推荐普通用户使用 |
+| `.vb` / `.cs` | VB / C# 脚本，启动时自动编译，不需要安装 SDK（语法级别较旧） |
 | `.dll` | 预编译插件，适合需要引用其它第三方库的场景 |
 
 `plugin.json` 示例：
@@ -61,7 +62,39 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
 
 `id` 和 `entry` 为必填项。插件的启用状态保存在 `%AppData%\PCL\Plugins\plugins.json`，在设置页修改开关后需要重启启动器才会生效。
 
-### 写一个脚本插件（不用编译）
+### 写一个 Lua 脚本插件（推荐）
+
+新建 `plugin.lua`，用记事本写就行：
+
+```lua
+function OnLoad()
+    pcl.Log("插件已加载，启动器版本 " .. pcl.Version)
+    pcl.Hint("欢迎回来！")
+end
+
+function OnGameLaunching(name)
+    pcl.Log("即将启动 " .. name)
+end
+
+function OnGameExited(code)
+    pcl.Log("游戏已退出，退出码 " .. code)
+end
+```
+
+Lua 插件运行在 **MoonSharp 硬沙箱**中：没有 `io`、`os`、`require`，不能读写文件或执行命令，只能调用下面这些接口。
+
+| 接口 | 说明 |
+| --- | --- |
+| `pcl.Log(文本)` | 写入启动器日志 |
+| `pcl.Hint(文本)` | 左下角提示 |
+| `pcl.Warn(文本)` | 红色提示 |
+| `pcl.GetSetting(键)` | 读插件私有设置 |
+| `pcl.SetSetting(键, 值)` | 写插件私有设置 |
+| `pcl.Version` | 启动器版本 |
+
+四个回调都可以只写需要的，没写的会被跳过。
+
+### 写一个 VB / C# 脚本插件
 
 新建 `plugin.vb`，直接用记事本写就行：
 
