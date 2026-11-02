@@ -81,18 +81,25 @@ function OnGameExited(code)
 end
 ```
 
-Lua 插件运行在 **MoonSharp 硬沙箱**中：没有 `io`、`os`、`require`，不能读写文件或执行命令，只能调用下面这些接口。
+Lua 插件运行在 **MoonSharp 硬沙箱**中：没有 `io`、`os`、`require`，不能直接碰文件系统和命令行，只能调用下面这些受控接口。
 
 | 接口 | 说明 |
 | --- | --- |
 | `pcl.Log(文本)` | 写入启动器日志 |
-| `pcl.Hint(文本)` | 左下角提示 |
-| `pcl.Warn(文本)` | 红色提示 |
-| `pcl.GetSetting(键)` | 读插件私有设置 |
-| `pcl.SetSetting(键, 值)` | 写插件私有设置 |
+| `pcl.Hint(文本)` / `pcl.Warn(文本)` | 左下角提示（Warn 为红色） |
+| `pcl.GetSetting(键)` / `pcl.SetSetting(键, 值)` | 插件私有设置，存盘，重启后还在 |
+| `pcl.GetInstance()` | 返回 `{name, loader, game_version, mods, path}`，没选中实例时返回空字符串 |
+| `pcl.Now()` / `pcl.Tick()` | 当前时间文本 / Unix 毫秒时间戳 |
+| `pcl.Backup()` | 立即备份当前实例的配置与存档，返回备份目录 |
+| `pcl.OpenUrl(网址)` / `pcl.OpenFolder(路径)` | 打开网页 / 文件夹 |
+| `pcl.RunCommand(命令)` | 执行外部命令，**会先弹窗让用户确认**，返回是否执行 |
+| `pcl.GetSettingValue(键)` / `pcl.SetSettingValue(键, 值)` | 读写启动器设置，仅支持 `LaunchRamCustom`、`UiLauncherTransparent`、`LaunchArgumentRam`、`UiBackgroundColorful` |
+| `pcl.ReadFile(相对路径)` / `pcl.WriteFile(相对路径, 内容)` | 读写插件自己目录下的文件，越权路径会被拒绝 |
 | `pcl.Version` | 启动器版本 |
 
-四个回调都可以只写需要的，没写的会被跳过。
+四个回调都可以只写需要的，没写的会被跳过。另外可以额外定义 `OnGameCrashed(报告目录)`，游戏崩溃并完成分析后会调用。
+
+> `OnLoad` 执行时启动器还没选中版本，`pcl.GetInstance()` 通常返回空；需要实例信息请在 `OnGameLaunching` 里取。
 
 ### 写一个 VB / C# 脚本插件
 

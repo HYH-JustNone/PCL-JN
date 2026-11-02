@@ -386,6 +386,12 @@ Public Module ModWatcher
                     Analyzer.Analyze()
                     Analyzer.Output(False, New List(Of String) From
                         {Instance.PathVersion & Instance.Name & ".json", Paths.Base & "PCL\Log1.txt", Paths.Base & "PCL\LatestLaunch.bat"})
+                    'PCL-JN：通知插件游戏已崩溃
+                    Try
+                        Plugin.PluginManager.RaiseGameCrashed(Instance.PathIndie & "crash-reports\")
+                    Catch ex As Exception
+                        Logger.Warn(ex, "插件处理崩溃事件失败")
+                    End Try
                 Catch ex As Exception
                     Logger.Error(ex, "崩溃分析失败")
                 End Try

@@ -1,4 +1,5 @@
 Imports System.CodeDom.Compiler
+Imports System.Diagnostics
 Imports System.Reflection
 Imports MoonSharp.Interpreter
 
@@ -58,6 +59,16 @@ Namespace Plugin
         ''' 游戏进程退出后调用。
         ''' </summary>
         Sub OnGameExited(ExitCode As Integer)
+    End Interface
+
+    ''' <summary>
+    ''' 可选接口：实现后可以收到游戏崩溃事件。
+    ''' </summary>
+    Public Interface IPluginCrashHandler
+        ''' <summary>
+        ''' 游戏崩溃并完成分析后调用，参数为崩溃报告所在文件夹。
+        ''' </summary>
+        Sub OnGameCrashed(ReportFolder As String)
     End Interface
 
     ''' <summary>
@@ -277,8 +288,17 @@ Namespace Plugin
         ''' </summary>
         Private Class LuaPlugin
             Implements IPlugin
+            Implements IPluginCrashHandler
 
             Private ReadOnly Engine As Script
+
+            '允许插件读写的启动器设置（只放数值型与布尔型，避免误改路径等关键项）
+            Private Shared ReadOnly SettingKinds As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase) From {
+                {"LaunchRamCustom", "int"},
+                {"UiLauncherTransparent", "int"},
+                {"LaunchArgumentRam", "bool"},
+                {"UiBackgroundColorful", "bool"}
+            }
 
             Public Sub New(EntryPath As String, Context As IPluginContext)
                 Engine = New Script(CoreModules.Preset_HardSandbox)
@@ -290,6 +310,17 @@ Namespace Plugin
                 Api.Set("Warn", DynValue.NewCallback(Function(C, A) ApiHint(Context, A, True)))
                 Api.Set("GetSetting", DynValue.NewCallback(Function(C, A) ApiGetSetting(Context, A)))
                 Api.Set("SetSetting", DynValue.NewCallback(Function(C, A) ApiSetSetting(Context, A)))
+                Api.Set("Now", DynValue.NewCallback(Function(C, A) DynValue.NewString(Date.Now.ToString("yyyy-MM-dd HH:mm:ss"))))
+                Api.Set("Tick", DynValue.NewCallback(Function(C, A) DynValue.NewNumber((Date.UtcNow - New Date(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds)))
+                Api.Set("GetInstance", DynValue.NewCallback(Function(C, A) ApiGetInstance()))
+                Api.Set("Backup", DynValue.NewCallback(Function(C, A) ApiBackup()))
+                Api.Set("OpenUrl", DynValue.NewCallback(Function(C, A) ApiOpenUrl(A)))
+                Api.Set("OpenFolder", DynValue.NewCallback(Function(C, A) ApiOpenFolder(A)))
+                Api.Set("RunCommand", DynValue.NewCallback(Function(C, A) ApiRunCommand(A)))
+                Api.Set("GetSettingValue", DynValue.NewCallback(Function(C, A) ApiGetSettingValue(A)))
+                Api.Set("SetSettingValue", DynValue.NewCallback(Function(C, A) ApiSetSettingValue(A)))
+                Api.Set("ReadFile", DynValue.NewCallback(Function(C, A) ApiReadFile(Context, A)))
+                Api.Set("WriteFile", DynValue.NewCallback(Function(C, A) ApiWriteFile(Context, A)))
                 Engine.Globals.Set("pcl", DynValue.NewTable(Api))
                 Engine.DoFile(EntryPath)
             End Sub
@@ -314,6 +345,166 @@ Namespace Plugin
                 Return DynValue.Nil
             End Function
 
+            '当前实例信息：名称、加载器、游戏版本、Mod 数量、实例目录
+            Private Function ApiGetInstance() As DynValue
+                Try
+                    Dim Inst As McInstance = McInstanceSelected
+                    If Inst Is Nothing Then Return DynValue.NewString("")
+                    Dim Loader As String = "原版"
+                    Dim GameVersion As String = ""
+                    Try
+                        If Inst.Version.ModLoaders.HasFlagF(ModLoaders.Fabric) Then
+                            Loader = "fabric"
+                        ElseIf Inst.Version.ModLoaders.HasFlagF(ModLoaders.NeoForge) Then
+                            Loader = "neoforge"
+                        ElseIf Inst.Version.ModLoaders.HasFlagF(ModLoaders.Forge) Then
+                            Loader = "forge"
+                        End If
+                        GameVersion = Inst.Version.VanillaName
+                        If GameVersion = "Unknown" Then GameVersion = ""
+                    Catch ex As Exception
+                        Logger.Warn(ex, "插件读取实例信息失败")
+                    End Try
+                    Dim ModCount As Integer = 0
+                    Try
+                        Dim ModFolder As String = Inst.PathIndie & "mods\"
+                        If DirectoryUtils.Exists(ModFolder) Then
+                            ModCount = DirectoryUtils.EnumerateFiles(ModFolder, False).Count(Function(F) F.ToLowerInvariant().EndsWith(".jar"))
+                        End If
+                    Catch ex As Exception
+                        Logger.Warn(ex, "插件统计 Mod 数量失败")
+                    End Try
+                    Dim Result As New Table(Engine)
+                    Result.Set("name", DynValue.NewString(Inst.Name))
+                    Result.Set("loader", DynValue.NewString(Loader))
+                    Result.Set("game_version", DynValue.NewString(GameVersion))
+                    Result.Set("mods", DynValue.NewNumber(ModCount))
+                    Result.Set("path", DynValue.NewString(Inst.PathIndie))
+                    Return DynValue.NewTable(Result)
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取实例信息失败")
+                    Return DynValue.NewString("")
+                End Try
+            End Function
+
+            '立即备份当前实例的配置与存档，返回备份目录
+            Private Shared Function ApiBackup() As DynValue
+                Try
+                    Dim Inst As McInstance = McInstanceSelected
+                    If Inst Is Nothing Then Return DynValue.NewString("")
+                    Return DynValue.NewString(ModBackup.ForceBackup(Inst.PathIndie))
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件请求备份失败")
+                    Return DynValue.NewString("")
+                End Try
+            End Function
+
+            Private Shared Function ApiOpenUrl(Args As CallbackArguments) As DynValue
+                Dim Url As String = ArgText(Args)
+                If Not (Url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) OrElse Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) Then
+                    Return DynValue.False
+                End If
+                RunInUi(Sub() OpenWebsite(Url))
+                Return DynValue.True
+            End Function
+
+            Private Shared Function ApiOpenFolder(Args As CallbackArguments) As DynValue
+                Dim Folder As String = ArgText(Args)
+                If Folder = "" Then Return DynValue.False
+                RunInUi(Sub() OpenExplorer(Folder))
+                Return DynValue.True
+            End Function
+
+            '执行外部命令，必须先经过用户确认
+            Private Shared Function ApiRunCommand(Args As CallbackArguments) As DynValue
+                Dim Command As String = ArgText(Args)
+                If Command = "" Then Return DynValue.False
+                Dim Allowed As Boolean = False
+                RunInUiWait(Sub()
+                                Allowed = MyMsgBox("插件请求执行以下命令：" & vbCrLf & vbCrLf & Command & vbCrLf & vbCrLf & "确定要执行吗？",
+                                                   "插件请求执行命令", "执行", "取消") = 1
+                            End Sub)
+                If Not Allowed Then Return DynValue.False
+                Try
+                    Process.Start(New ProcessStartInfo("cmd.exe", "/c " & Command) With {.CreateNoWindow = True, .UseShellExecute = False})
+                    Return DynValue.True
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件执行命令失败")
+                    Return DynValue.False
+                End Try
+            End Function
+
+            Private Shared Function ApiGetSettingValue(Args As CallbackArguments) As DynValue
+                Dim Key As String = ArgText(Args)
+                Dim Kind As String = Nothing
+                If Not SettingKinds.TryGetValue(Key, Kind) Then Return DynValue.NewString("")
+                Try
+                    If Kind = "int" Then Return DynValue.NewString(Settings.Get(Of Integer)(Key).ToString())
+                    Return DynValue.NewString(If(Settings.Get(Of Boolean)(Key), "true", "false"))
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件读取设置 {Key} 失败")
+                    Return DynValue.NewString("")
+                End Try
+            End Function
+
+            Private Shared Function ApiSetSettingValue(Args As CallbackArguments) As DynValue
+                If Args.Count < 2 Then Return DynValue.False
+                Dim Key As String = Args(0).ToPrintString()
+                Dim Text As String = Args(1).ToPrintString()
+                Dim Kind As String = Nothing
+                If Not SettingKinds.TryGetValue(Key, Kind) Then Return DynValue.False
+                Try
+                    If Kind = "int" Then
+                        Dim Number As Integer
+                        If Not Integer.TryParse(Text, Number) Then Return DynValue.False
+                        Settings.Set(Key, Number)
+                    Else
+                        Settings.Set(Key, Text.Equals("true", StringComparison.OrdinalIgnoreCase) OrElse Text = "1")
+                    End If
+                    Return DynValue.True
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件修改设置 {Key} 失败")
+                    Return DynValue.False
+                End Try
+            End Function
+
+            '插件只能读写自己目录下的文件，防止越权
+            Private Shared Function SafePluginPath(DataPath As String, Relative As String) As String
+                Try
+                    Dim Root As String = Path.GetFullPath(DataPath)
+                    Dim Full As String = Path.GetFullPath(Path.Combine(Root, Relative))
+                    If Not Full.StartsWith(Root, StringComparison.OrdinalIgnoreCase) Then Return ""
+                    Return Full
+                Catch
+                    Return ""
+                End Try
+            End Function
+
+            Private Shared Function ApiReadFile(Context As IPluginContext, Args As CallbackArguments) As DynValue
+                Dim Full As String = SafePluginPath(Context.DataPath, ArgText(Args))
+                If Full = "" OrElse Not FileUtils.Exists(Full) Then Return DynValue.NewString("")
+                Try
+                    Return DynValue.NewString(FileUtils.ReadAsString(Full))
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取文件失败")
+                    Return DynValue.NewString("")
+                End Try
+            End Function
+
+            Private Shared Function ApiWriteFile(Context As IPluginContext, Args As CallbackArguments) As DynValue
+                If Args.Count < 2 Then Return DynValue.False
+                Dim Full As String = SafePluginPath(Context.DataPath, Args(0).ToPrintString())
+                If Full = "" Then Return DynValue.False
+                Try
+                    DirectoryUtils.Create(Path.GetDirectoryName(Full))
+                    FileUtils.Write(Full, Args(1).ToPrintString())
+                    Return DynValue.True
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件写入文件失败")
+                    Return DynValue.False
+                End Try
+            End Function
+
             '调用脚本里的全局函数；脚本没定义该函数时直接跳过
             Private Sub CallScript(Name As String, ParamArray Args As Object())
                 Dim Target As DynValue = Engine.Globals.Get(Name)
@@ -336,6 +527,10 @@ Namespace Plugin
 
             Public Sub OnGameExited(ExitCode As Integer) Implements IPlugin.OnGameExited
                 CallScript("OnGameExited", ExitCode)
+            End Sub
+
+            Public Sub OnGameCrashed(ReportFolder As String) Implements IPluginCrashHandler.OnGameCrashed
+                CallScript("OnGameCrashed", ReportFolder)
             End Sub
         End Class
 
@@ -408,6 +603,25 @@ Namespace Plugin
                     Record.Instance.OnGameExited(ExitCode)
                 Catch ex As Exception
                     Logger.Warn(ex, $"插件 {Record.Entry.Id} 处理游戏退出事件失败")
+                End Try
+            Next
+        End Sub
+
+        ''' <summary>
+        ''' 转发游戏崩溃事件（仅实现 IPluginCrashHandler 的插件会收到）。
+        ''' </summary>
+        Public Sub RaiseGameCrashed(ReportFolder As String)
+            Dim Snapshot As PluginRecord()
+            SyncLock PluginLock
+                Snapshot = LoadedPlugins.Where(Function(R) R.Entry.Enabled).ToArray()
+            End SyncLock
+            For Each Record As PluginRecord In Snapshot
+                Dim Handler As IPluginCrashHandler = TryCast(Record.Instance, IPluginCrashHandler)
+                If Handler Is Nothing Then Continue For
+                Try
+                    Handler.OnGameCrashed(ReportFolder)
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件 {Record.Entry.Id} 处理崩溃事件失败")
                 End Try
             Next
         End Sub
