@@ -1,3 +1,16 @@
 {
-  "plugins": []
+  "plugins": [
+    {
+      "id": "startup-counter",
+      "name": "启动计数器",
+      "version": "1.0.0",
+      "author": "just_none",
+      "description": "示例插件：统计游戏启动次数，并在设置页插件卡片里提供一个查看按钮。",
+      "download": "https://raw.githubusercontent.com/HYH-JustNone/PCL-JN/dev/examples/startup-counter.pjnp",
+      "sha256": "5802b2c9562fc08f5cb5127f701f9a2cc3f45cce4f2ef1afd8283ea550373347",
+      "size": 1188,
+      "permissions": [],
+      "platform": []
+    }
+  ]
 }

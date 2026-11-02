@@ -129,6 +129,10 @@ Namespace Plugin
         ''' </summary>
         Public Property UpdateUrl As String = ""
         ''' <summary>
+        ''' 支持的最低启动器版本，例如 0.0.1.0。为空表示不限制。
+        ''' </summary>
+        Public Property MinLauncherVersion As String = ""
+        ''' <summary>
         ''' 支持的平台，例如 win-x64。为空表示不限制。
         ''' </summary>
         Public Property Platforms As New List(Of String)
@@ -219,6 +223,12 @@ Namespace Plugin
                             Logger.Warn($"插件 {Entry.Id} 未加载：{Entry.ErrorMessage}")
                             Continue For
                         End If
+                        '启动器版本校验
+                        If Entry.MinLauncherVersion <> "" AndAlso Not IsLauncherVersionEnough(Entry.MinLauncherVersion) Then
+                            Entry.ErrorMessage = $"需要启动器版本 {Entry.MinLauncherVersion} 或更高"
+                            Logger.Warn($"插件 {Entry.Id} 未加载：{Entry.ErrorMessage}")
+                            Continue For
+                        End If
                         Dim Missing As New List(Of String)
                         For Each RequiredId As String In Entry.Requires
                             If Not PluginEntries.Any(Function(E) String.Equals(E.Id, RequiredId, StringComparison.OrdinalIgnoreCase)) Then Missing.Add(RequiredId)
@@ -284,6 +294,7 @@ Namespace Plugin
                 End If
                 '读取平台声明
                 CollectStrings(Meta("platform"), Entry.Platforms)
+                Entry.MinLauncherVersion = GetJsonString(Meta, "min_launcher_version").Trim()
             Catch ex As Exception
                 Logger.Warn(ex, $"读取插件信息失败：{MetaFile}")
                 Return
@@ -305,7 +316,7 @@ Namespace Plugin
                                        Dim Text As String = Client.GetStringAsync(Entry.UpdateUrl).Result
                                        Dim Token As JToken = Text.DeserializeJson()
                                        Dim Latest As String = GetJsonString(TryCast(Token, JObject), "version").Trim()
-                                       If Latest <> "" AndAlso Latest <> Entry.Version Then
+                                       If Latest <> "" AndAlso IsNewerVersion(Latest, Entry.Version) Then
                                            Logger.Info($"插件 {Entry.Id} 有新版本：{Entry.Version} → {Latest}")
                                            Hint($"插件「{Entry.Name}」有新版本 {Latest}（当前 {Entry.Version}）", HintType.Blue)
                                        End If
@@ -490,6 +501,9 @@ Namespace Plugin
                 Api.Set("ReadFile", DynValue.NewCallback(Function(C, A) ApiReadFile(Context, A)))
                 Api.Set("WriteFile", DynValue.NewCallback(Function(C, A) ApiWriteFile(Context, A)))
                 Api.Set("AddMenuItem", DynValue.NewCallback(Function(C, A) ApiAddMenuItem(A)))
+                Api.Set("GetLaunchArgs", DynValue.NewCallback(Function(C, A) ApiGetLaunchArgs()))
+                Api.Set("AddLaunchArg", DynValue.NewCallback(Function(C, A) ApiAddLaunchArg(A)))
+                Api.Set("SetInstanceSetting", DynValue.NewCallback(Function(C, A) ApiSetInstanceSetting(A)))
                 Engine.Globals.Set("pcl", DynValue.NewTable(Api))
                 Engine.DoFile(EntryPath)
             End Sub
@@ -1121,6 +1135,98 @@ Namespace Plugin
             End Function
 
             ''' <summary>
+            ''' 允许插件写入的版本级设置白名单，避免误改全局设置。
+            ''' </summary>
+            Private Shared ReadOnly InstanceSettingWhitelist As String() = {
+                "VersionAdvanceJvm", "VersionAdvanceGame", "VersionAdvanceRun", "VersionAdvanceRunWait",
+                "VersionAdvanceDisableJLW", "VersionAdvanceDisableLUA", "VersionAdvanceDisableModUpdate",
+                "VersionAdvanceGC", "VersionAdvanceAssets", "VersionAdvanceAssetsV2",
+                "VersionArgumentTitle", "VersionArgumentInfo", "VersionArgumentJavaRange", "VersionArgumentJavaV2",
+                "VersionArgumentIndieV2", "VersionRamType", "VersionRamCustom", "VersionRamOptimize"
+            }
+
+            '读取当前实例的自定义启动参数
+            Private Function ApiGetLaunchArgs() As DynValue
+                Dim Result As New Table(Engine)
+                Try
+                    Dim Inst As McInstance = McInstanceSelected
+                    If Inst Is Nothing Then Return DynValue.NewTable(Result)
+                    Result.Set("jvm", DynValue.NewString(Settings.Get(Of String)("VersionAdvanceJvm", Instance:=Inst)))
+                    Result.Set("game", DynValue.NewString(Settings.Get(Of String)("VersionAdvanceGame", Instance:=Inst)))
+                    Result.Set("title", DynValue.NewString(Settings.Get(Of String)("VersionArgumentTitle", Instance:=Inst)))
+                    Result.Set("info", DynValue.NewString(Settings.Get(Of String)("VersionArgumentInfo", Instance:=Inst)))
+                    Result.Set("instance", DynValue.NewString(Inst.Name))
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件 {PluginId} 读取启动参数失败")
+                End Try
+                Return DynValue.NewTable(Result)
+            End Function
+
+            '向当前实例追加 JVM 或游戏参数，下次启动生效
+            Private Function ApiAddLaunchArg(Args As CallbackArguments) As DynValue
+                If Not HasPermission("command") Then Return DynValue.False
+                If Args.Count < 2 Then Return DynValue.False
+                Dim Kind As String = Args(0).ToPrintString().Trim().ToLowerInvariant()
+                Dim Text As String = Args(1).ToPrintString().Trim()
+                If Text = "" Then Return DynValue.False
+                Dim Key As String
+                Select Case Kind
+                    Case "jvm" : Key = "VersionAdvanceJvm"
+                    Case "game" : Key = "VersionAdvanceGame"
+                    Case Else : Return DynValue.False
+                End Select
+                Try
+                    Dim Inst As McInstance = McInstanceSelected
+                    If Inst Is Nothing Then Return DynValue.False
+                    Dim Succeeded As Boolean = False
+                    RunInUiWait(Sub()
+                                    Try
+                                        Dim Old As String = Settings.Get(Of String)(Key, Instance:=Inst)
+                                        Settings.Set(Key, (Old & " " & Text).Trim(), Instance:=Inst)
+                                        Succeeded = True
+                                    Catch ex As Exception
+                                        Logger.Warn(ex, $"插件 {PluginId} 追加启动参数失败")
+                                    End Try
+                                End Sub)
+                    If Succeeded Then Logger.Info($"插件 {PluginId} 已追加游戏参数（{Kind}）：{Text}")
+                    Return If(Succeeded, DynValue.True, DynValue.False)
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件 {PluginId} 追加启动参数失败")
+                    Return DynValue.False
+                End Try
+            End Function
+
+            '写入当前实例的版本级设置（仅限白名单内的键）
+            Private Function ApiSetInstanceSetting(Args As CallbackArguments) As DynValue
+                If Not HasPermission("command") Then Return DynValue.False
+                If Args.Count < 2 Then Return DynValue.False
+                Dim Key As String = Args(0).ToPrintString().Trim()
+                Dim Value As String = Args(1).ToPrintString()
+                If Not InstanceSettingWhitelist.Any(Function(K) String.Equals(K, Key, StringComparison.OrdinalIgnoreCase)) Then
+                    Logger.Warn($"插件 {PluginId} 试图写入不允许的版本设置：{Key}")
+                    Return DynValue.False
+                End If
+                Try
+                    Dim Inst As McInstance = McInstanceSelected
+                    If Inst Is Nothing Then Return DynValue.False
+                    Dim Succeeded As Boolean = False
+                    RunInUiWait(Sub()
+                                    Try
+                                        Settings.Set(Key, Value, Instance:=Inst)
+                                        Succeeded = True
+                                    Catch ex As Exception
+                                        Logger.Warn(ex, $"插件 {PluginId} 写入版本设置 {Key} 失败")
+                                    End Try
+                                End Sub)
+                    If Succeeded Then Logger.Info($"插件 {PluginId} 修改版本设置：{Key} = {Value}")
+                    Return If(Succeeded, DynValue.True, DynValue.False)
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件 {PluginId} 写入版本设置 {Key} 失败")
+                    Return DynValue.False
+                End Try
+            End Function
+
+            ''' <summary>
             ''' 在后台线程执行脚本，超时则强制中断，避免插件死循环卡死启动器。
             ''' </summary>
             Private Function RunWithTimeout(Label As String, Action As Action, Optional TimeoutMs As Integer = 10000) As Boolean
@@ -1194,6 +1300,27 @@ Namespace Plugin
         End Class
 
         ''' <summary>
+        ''' 判断 Remote 是否比 Local 新（按点分数字比较，无法解析时视为不比 Local 新）。
+        ''' </summary>
+        Public Function IsNewerVersion(Remote As String, Local As String) As Boolean
+            Try
+                Dim RemoteParts As String() = ExtractVersionNumbers(Remote)
+                Dim LocalParts As String() = ExtractVersionNumbers(Local)
+                For Index As Integer = 0 To Math.Max(RemoteParts.Length, LocalParts.Length) - 1
+                    Dim RemoteValue As Integer = 0
+                    Dim LocalValue As Integer = 0
+                    If Index < RemoteParts.Length Then Integer.TryParse(RemoteParts(Index), RemoteValue)
+                    If Index < LocalParts.Length Then Integer.TryParse(LocalParts(Index), LocalValue)
+                    If RemoteValue > LocalValue Then Return True
+                    If RemoteValue < LocalValue Then Return False
+                Next
+            Catch ex As Exception
+                Logger.Warn(ex, $"比较版本号失败：{Remote} / {Local}")
+            End Try
+            Return False
+        End Function
+
+        ''' <summary>
         ''' 设置插件是否启用。仅在状态文件中记录，需要重启后才会生效。
         ''' </summary>
         Public Sub SetPluginEnabled(Id As String, Enabled As Boolean)
@@ -1232,7 +1359,8 @@ Namespace Plugin
                         .Requires = New List(Of String)(E.Requires),
                         .UpdateUrl = E.UpdateUrl,
                         .Folder = E.Folder,
-                        .Platforms = New List(Of String)(E.Platforms)
+                        .Platforms = New List(Of String)(E.Platforms),
+                        .MinLauncherVersion = E.MinLauncherVersion
                     }).ToList()
             End SyncLock
         End Function
@@ -1278,6 +1406,101 @@ Namespace Plugin
                 Target.Add(Item.ToString().Trim())
             Next
         End Sub
+
+        '当前启动器版本是否满足插件要求
+        Private Function IsLauncherVersionEnough(Required As String) As Boolean
+            Try
+                Dim CurrentParts As String() = ExtractVersionNumbers(VersionDisplay)
+                Dim RequiredParts As String() = ExtractVersionNumbers(Required)
+                For Index As Integer = 0 To Math.Max(CurrentParts.Length, RequiredParts.Length) - 1
+                    Dim CurrentValue As Integer = 0
+                    Dim RequiredValue As Integer = 0
+                    If Index < CurrentParts.Length Then Integer.TryParse(CurrentParts(Index), CurrentValue)
+                    If Index < RequiredParts.Length Then Integer.TryParse(RequiredParts(Index), RequiredValue)
+                    If CurrentValue > RequiredValue Then Return True
+                    If CurrentValue < RequiredValue Then Return False
+                Next
+                Return True
+            Catch
+                Return True
+            End Try
+        End Function
+
+        Private Function ExtractVersionNumbers(Source As String) As String()
+            Dim Match As System.Text.RegularExpressions.Match = System.Text.RegularExpressions.Regex.Match(Source, "\d+(\.\d+)+")
+            If Not Match.Success Then Return New String() {}
+            Return Match.Value.Split("."c)
+        End Function
+
+        ''' <summary>
+        ''' 卸载某个插件的运行时实例（不删除文件、不移除列表项）。
+        ''' </summary>
+        Private Sub UnloadPluginById(Id As String)
+            SyncLock PluginLock
+                Dim Record As PluginRecord = LoadedPlugins.FirstOrDefault(Function(R) String.Equals(R.Entry.Id, Id, StringComparison.OrdinalIgnoreCase))
+                If Record IsNot Nothing Then
+                    Try
+                        Record.Instance.OnUnload()
+                    Catch
+                    End Try
+                    LoadedPlugins.Remove(Record)
+                End If
+                Dim Entry As PluginEntry = PluginEntries.FirstOrDefault(Function(E) String.Equals(E.Id, Id, StringComparison.OrdinalIgnoreCase))
+                If Entry IsNot Nothing Then
+                    Entry.Loaded = False
+                    Entry.ErrorMessage = ""
+                End If
+                SyncLock MenuLock
+                    MenuItems.RemoveAll(Function(M) String.Equals(M.PluginId, Id, StringComparison.OrdinalIgnoreCase))
+                End SyncLock
+            End SyncLock
+        End Sub
+
+        ''' <summary>
+        ''' 把插件目录中的数据文件复制到临时位置，返回路径（不存在则返回空字符串）。
+        ''' </summary>
+        Private Function BackupPluginData(Folder As String, FileName As String) As String
+            Try
+                Dim Source As String = Path.Combine(Folder, FileName)
+                If Not FileUtils.Exists(Source) Then Return ""
+                Dim Target As String = Path.Combine(Path.GetTempPath(), "PCL-JN-Data-" & Guid.NewGuid().ToString("N") & "-" & FileName)
+                System.IO.File.Copy(Source, Target, True)
+                Return Target
+            Catch ex As Exception
+                Logger.Warn(ex, $"备份插件数据 {FileName} 失败")
+                Return ""
+            End Try
+        End Function
+
+        ''' <summary>
+        ''' 把备份的数据文件还原到插件目录，并清理备份。
+        ''' </summary>
+        Private Sub RestorePluginData(BackupPath As String, TargetPath As String)
+            If BackupPath = "" Then Return
+            Try
+                System.IO.File.Copy(BackupPath, TargetPath, True)
+            Catch ex As Exception
+                Logger.Warn(ex, $"恢复插件数据 {TargetPath} 失败")
+            Finally
+                Try
+                    System.IO.File.Delete(BackupPath)
+                Catch
+                End Try
+            End Try
+        End Sub
+
+        ''' <summary>
+        ''' 重载单个插件。脚本类插件会立即生效；dll 插件改动仍需重启启动器。
+        ''' </summary>
+        Public Function ReloadPlugin(Id As String) As String
+            SyncLock PluginLock
+                Dim Entry As PluginEntry = PluginEntries.FirstOrDefault(Function(E) String.Equals(E.Id, Id, StringComparison.OrdinalIgnoreCase))
+                If Entry Is Nothing Then Return "找不到插件"
+                UnloadPluginById(Id)
+                LoadPlugin(Entry, Entry.Folder)
+                Return Entry.ErrorMessage
+            End SyncLock
+        End Function
 
         ''' <summary>
         ''' 插件市场索引地址。
@@ -1352,9 +1575,9 @@ Namespace Plugin
         End Function
 
         ''' <summary>
-        ''' 从市场条目下载并安装插件，返回插件 id。失败抛出带说明的异常。
+        ''' 从市场条目下载并安装插件，返回插件 id。Upgrade 为 True 时覆盖旧版本并保留设置与日志。
         ''' </summary>
-        Public Function InstallFromMarket(Item As MarketPlugin) As String
+        Public Function InstallFromMarket(Item As MarketPlugin, Optional Upgrade As Boolean = False) As String
             If Item Is Nothing OrElse Item.DownloadUrl = "" Then Throw New Exception("插件地址为空")
             Dim TempFile As String = Path.Combine(Path.GetTempPath(), "PCL-JN-" & Guid.NewGuid().ToString("N") & ".pjnp")
             Try
@@ -1370,7 +1593,7 @@ Namespace Plugin
                         Throw New Exception("SHA256 校验失败，文件可能被篡改")
                     End If
                 End If
-                Return InstallPluginPackage(TempFile)
+                Return InstallPluginPackage(TempFile, Upgrade)
             Finally
                 Try
                     If System.IO.File.Exists(TempFile) Then System.IO.File.Delete(TempFile)
@@ -1381,8 +1604,9 @@ Namespace Plugin
 
         ''' <summary>
         ''' 安装 .pjnp 插件包（zip 结构），返回插件 id。失败抛出带说明的异常。
+        ''' Upgrade 为 True 时覆盖旧版本，并保留旧的 settings.json 与 log.txt。
         ''' </summary>
-        Public Function InstallPluginPackage(PackagePath As String) As String
+        Public Function InstallPluginPackage(PackagePath As String, Optional Upgrade As Boolean = False) As String
             If Not FileUtils.Exists(PackagePath) Then Throw New Exception("找不到插件包：" & PackagePath)
             Dim Extension As String = Path.GetExtension(PackagePath).ToLowerInvariant()
             If Extension <> ".pjnp" AndAlso Extension <> ".zip" Then Throw New Exception("不支持的插件包格式：" & Extension & "（应为 .pjnp）")
@@ -1412,10 +1636,30 @@ Namespace Plugin
                     Throw New Exception($"该插件不支持当前平台（{CurrentPlatform}）")
                 End If
                 Dim Target As String = Path.Combine(PluginFolder, Id)
-                If DirectoryUtils.Exists(Target) Then Throw New Exception("已存在同名插件，请先删除旧版本")
+                Dim BackupSettings As String = ""
+                Dim BackupLog As String = ""
+                Dim IsUpgrading As Boolean = DirectoryUtils.Exists(Target)
+                If IsUpgrading Then
+                    If Not Upgrade Then Throw New Exception("已存在同名插件，请先删除旧版本")
+                    '升级：先卸载旧实例（settings.json 缓存在内存中，必须先释放）
+                    UnloadPluginById(Id)
+                    '备份用户数据，避免升级丢设置
+                    BackupSettings = BackupPluginData(Target, "settings.json")
+                    BackupLog = BackupPluginData(Target, "log.txt")
+                    Try
+                        System.IO.Directory.Delete(Target, True)
+                    Catch ex As Exception
+                        Throw New Exception("旧版本文件被占用，无法覆盖升级。DLL 插件需要在关闭启动器后手动替换（Lua / 脚本插件支持运行中升级）")
+                    End Try
+                End If
                 System.IO.Directory.Move(TempFolder, Target)
                 TempFolder = "" '已移动，无需清理
-                Logger.Info($"已安装插件包：{Id}")
+                '恢复用户数据
+                RestorePluginData(BackupSettings, Path.Combine(Target, "settings.json"))
+                RestorePluginData(BackupLog, Path.Combine(Target, "log.txt"))
+                '升级后重新扫描，让新版本立即生效
+                If IsUpgrading Then LoadAll()
+                Logger.Info($"已安装插件包：{Id}{If(IsUpgrading, "（升级）", "")}")
                 Return Id
             Finally
                 If TempFolder <> "" AndAlso DirectoryUtils.Exists(TempFolder) Then

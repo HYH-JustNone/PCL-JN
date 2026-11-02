@@ -1,0 +1,10 @@
+{
+  "id": "startup-counter",
+  "name": "启动计数器",
+  "version": "1.0.0",
+  "author": "just_none",
+  "description": "PCL-JN 示例插件：统计游戏启动次数，并在设置页插件卡片里提供一个查看按钮。",
+  "entry": "plugin.lua",
+  "permissions": [],
+  "min_launcher_version": "0.0.1.0"
+}

@@ -632,7 +632,9 @@ PreFin:
                     })
                 End If
                 Row.Children.Add(Info)
-                '启用开关
+                '启用开关与重载
+                Dim CapturedEntry As Plugin.PluginEntry = Entry
+                Dim Actions As New StackPanel With {.Orientation = Orientation.Horizontal, .VerticalAlignment = VerticalAlignment.Center}
                 Dim Check As New MyCheckBox With {
                     .Text = "启用",
                     .Height = 22,
@@ -646,8 +648,29 @@ PreFin:
                     Plugin.PluginManager.SetPluginEnabled(Entry.Id, Box.Checked)
                     Hint("插件开关已保存，重启后生效！")
                 End Sub
-                Grid.SetColumn(Check, 1)
-                Row.Children.Add(Check)
+                Actions.Children.Add(Check)
+                If Entry.Loaded Then
+                    Dim BtnReload As New MyButton With {
+                        .Text = "重载",
+                        .Height = 22,
+                        .Padding = New Thickness(9, 0, 9, 0),
+                        .Margin = New Thickness(8, 0, 0, 0),
+                        .VerticalAlignment = VerticalAlignment.Center
+                    }
+                    AddHandler BtnReload.Click,
+                    Sub(Sender As Object, Ev As MouseButtonEventArgs)
+                        Dim Message As String = Plugin.PluginManager.ReloadPlugin(CapturedEntry.Id)
+                        RefreshPlugins()
+                        If String.IsNullOrEmpty(Message) Then
+                            Hint("插件已重载", HintType.Green)
+                        Else
+                            Hint("重载失败：" & Message, HintType.Red)
+                        End If
+                    End Sub
+                    Actions.Children.Add(BtnReload)
+                End If
+                Grid.SetColumn(Actions, 1)
+                Row.Children.Add(Actions)
                 PanPlugins.Children.Add(Row)
                 '插件注册的菜单项
                 Dim MenuItems = Plugin.PluginManager.GetMenuItems(Entry.Id)
@@ -676,7 +699,6 @@ PreFin:
                     PanPlugins.Children.Add(MenuPanel)
                 End If
                 '加载失败时的恢复操作
-                Dim CapturedEntry As Plugin.PluginEntry = Entry
                 If Not CapturedEntry.Loaded AndAlso Not String.IsNullOrEmpty(CapturedEntry.ErrorMessage) Then
                     Dim FixPanel As New StackPanel With {.Orientation = Orientation.Horizontal, .Margin = New Thickness(0, 2, 0, 10)}
                     Dim BtnDisableOne As New MyButton With {.Text = "禁用", .Height = 26, .Padding = New Thickness(11, 0, 11, 0), .Margin = New Thickness(0, 0, 8, 0)}
@@ -826,17 +848,20 @@ PreFin:
                 })
             End If
             Row.Children.Add(Info)
-            Dim IsInstalled As Boolean = Installed.Any(Function(E) String.Equals(E.Id, Item.Id, StringComparison.OrdinalIgnoreCase))
+            Dim InstalledEntry As Plugin.PluginEntry = Installed.FirstOrDefault(Function(E) String.Equals(E.Id, Item.Id, StringComparison.OrdinalIgnoreCase))
+            Dim IsInstalled As Boolean = InstalledEntry IsNot Nothing
+            Dim CanUpdate As Boolean = IsInstalled AndAlso Plugin.PluginManager.IsNewerVersion(Item.Version, InstalledEntry.Version)
             Dim InstallButton As New MyButton With {
-                .Text = If(IsInstalled, "已安装", "安装"),
+                .Text = If(CanUpdate, "更新", If(IsInstalled, "已安装", "安装")),
                 .Height = 28,
                 .Padding = New Thickness(13, 0, 13, 0),
                 .VerticalAlignment = VerticalAlignment.Top
             }
-            InstallButton.IsEnabled = Not IsInstalled
+            InstallButton.IsEnabled = CanUpdate OrElse Not IsInstalled
             Dim Target As Plugin.MarketPlugin = Item
+            Dim TargetUpgrade As Boolean = CanUpdate
             AddHandler InstallButton.Click, Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
-                                                InstallFromMarketWithConfirm(Target)
+                                                InstallFromMarketWithConfirm(Target, TargetUpgrade)
                                             End Sub
             Grid.SetColumn(InstallButton, 1)
             Row.Children.Add(InstallButton)
@@ -847,22 +872,24 @@ PreFin:
         End If
     End Sub
 
-    Private Sub InstallFromMarketWithConfirm(Item As Plugin.MarketPlugin)
+    Private Sub InstallFromMarketWithConfirm(Item As Plugin.MarketPlugin, Optional Upgrade As Boolean = False)
         Dim PermissionText As String = If(Item.Permissions.Count = 0, "无", String.Join("、", Item.Permissions))
-        If MyMsgBox("确定安装插件「" & Item.Name & "」吗？" & vbCrLf & vbCrLf &
+        Dim ActionText As String = If(Upgrade, "更新", "安装")
+        If MyMsgBox("确定" & ActionText & "插件「" & Item.Name & "」吗？" & vbCrLf & vbCrLf &
                     "版本：" & Item.Version & vbCrLf &
-                    "权限：" & PermissionText, "安装插件", "安装", "取消") <> 1 Then Return
+                    "权限：" & PermissionText & If(Upgrade, vbCrLf & vbCrLf & "更新会保留插件的设置与日志。", ""),
+                    ActionText & "插件", ActionText, "取消") <> 1 Then Return
         RunInNewThread(Sub()
                            Try
-                               Dim Id As String = Plugin.PluginManager.InstallFromMarket(Item)
+                               Dim Id As String = Plugin.PluginManager.InstallFromMarket(Item, Upgrade)
                                RunInUi(Sub()
                                            Plugin.PluginManager.LoadAll()
                                            RefreshPlugins()
                                            RenderPluginMarket()
-                                           Hint($"插件已安装：{Id}，重启后生效", HintType.Green)
+                                           Hint($"插件已{ActionText}：{Id}", HintType.Green)
                                        End Sub)
                            Catch ex As Exception
-                               RunInUi(Sub() Hint("安装失败：" & ex.Message, HintType.Red))
+                               RunInUi(Sub() Hint(ActionText & "失败：" & ex.Message, HintType.Red))
                            End Try
                        End Sub, "Plugin Install")
     End Sub

@@ -60,6 +60,7 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
   "permissions": ["network", "file"],
   "platform": ["win-x64"],
   "requires": [],
+  "min_launcher_version": "0.0.1.0",
   "update": "https://example.com/my-plugin/version.json"
 }
 ```
@@ -76,9 +77,11 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
 
 不声明就调不通对应接口——这是给用户看的"这个插件想干什么"。
 
-`requires` 可声明依赖的其它插件 id，缺少依赖时会拒绝加载并在设置页显示原因。`update` 填一个返回 `{"version":"1.2.0"}` 的地址，启动时会自动检查并提示新版本（不会自动更新）。`platform` 可限定平台（`win-x64` / `win-arm64` / `win-x86`），留空表示不限制。
+`requires` 可声明依赖的其它插件 id，缺少依赖时会拒绝加载并在设置页显示原因。`update` 填一个返回 `{"version":"1.2.0"}` 的地址，启动时会自动检查并提示新版本（不会自动更新）。`platform` 可限定平台（`win-x64` / `win-arm64` / `win-x86`），留空表示不限制。`min_launcher_version` 声明需要的最低启动器版本，版本不够时插件不会加载并在列表里说明原因。
 
 每个插件还有自己的日志：`Plugins\<id>\log.txt`，`pcl.Log` 会同时写进去。
+
+插件列表里加载成功的插件后面有「重载」按钮：改完 `.lua` / `.vb` / `.cs` 脚本点一下就能立即生效，不用重启启动器（`.dll` 插件仍然需要重启）。
 
 ### 插件包与插件市场
 
@@ -114,7 +117,9 @@ my-plugin.pjnp
 }
 ```
 
-默认索引地址是 `https://raw.githubusercontent.com/HYH-JustNone/PCL-JN/dev/plugins/index.json`，结果会缓存 6 小时，可在界面里点「刷新」强制更新。
+默认索引地址是 `https://raw.githubusercontent.com/HYH-JustNone/PCL-JN/dev/plugins/index.json`，结果会缓存 6 小时，可在界面里点「刷新」强制更新。市场里已安装且有更新版本的插件会显示「更新」按钮，升级时会保留原来的 `settings.json` 与 `log.txt`（DLL 插件因为文件被占用，需要关掉启动器再手动替换）。
+
+仓库里的 [`examples/startup-counter`](./examples/startup-counter) 是一个可以直接跑起来的示例插件，[`examples/startup-counter.pjnp`](./examples/startup-counter.pjnp) 是它的打包结果。
 
 插件加载失败时，列表里会给出「禁用 / 删除 / 打开目录」三个操作，方便直接处理坏掉的插件。
 
@@ -161,6 +166,9 @@ Lua 插件运行在 **MoonSharp 硬沙箱**中：没有 `io`、`os`、`require`�
 | `pcl.CopyToClipboard(文本)` / `pcl.ShowDialog(标题, 内容)` | 复制到剪贴板 / 弹出对话框 |
 | `pcl.SetTickInterval(秒)` | 以指定间隔触发 `OnTick`，传 0 关闭 |
 | `pcl.AddMenuItem(文本, 函数)` | 在设置页该插件下方加一个按钮，点击执行函数 |
+| `pcl.GetLaunchArgs()` | 返回当前实例的启动参数 `{instance, jvm, game, title, info}` |
+| `pcl.AddLaunchArg(类别, 参数)` | 往当前实例追加启动参数，类别为 `"jvm"` 或 `"game"`，下次启动生效，需要 `command` 权限 |
+| `pcl.SetInstanceSetting(键, 值)` | 写入版本级设置（如 `VersionArgumentTitle`、`VersionRamCustom`），只允许白名单内的键，需要 `command` 权限 |
 | `pcl.Now()` / `pcl.Tick()` | 当前时间文本 / Unix 毫秒时间戳 |
 | `pcl.Backup()` | 立即备份当前实例的配置与存档，返回备份目录 |
 | `pcl.OpenUrl(网址)` / `pcl.OpenFolder(路径)` | 打开网页 / 文件夹 |
