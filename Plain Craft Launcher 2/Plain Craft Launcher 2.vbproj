@@ -293,6 +293,9 @@
       <DependentUpon>PageDownloadInstall.xaml</DependentUpon>
     </Compile>
     <Compile Include="Pages\PageDownload\PageDownloadModify.vb" />
+    <Compile Include="Pages\PageDownload\PageDownloadPlugin.xaml.vb">
+      <DependentUpon>PageDownloadPlugin.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Pages\PageDownload\Resource\PageDownloadCompDetail.xaml.vb">
       <DependentUpon>PageDownloadCompDetail.xaml</DependentUpon>
     </Compile>
@@ -540,6 +543,10 @@
       <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Pages\PageDownload\PageDownloadInstall.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="Pages\PageDownload\PageDownloadPlugin.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>

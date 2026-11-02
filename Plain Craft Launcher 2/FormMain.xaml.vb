@@ -1258,6 +1258,7 @@ Public Class FormMain
         DownloadDataPack = 4
         DownloadResourcePack = 5
         DownloadShader = 6
+        DownloadPlugin = 7
         SetupLaunch = 0
         SetupLink = 1
         SetupUI = 2

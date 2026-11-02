@@ -1,0 +1,28 @@
+<local:MyPageRight
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="clr-namespace:PCL" xmlns:d="http://schemas.microsoft.com/expression/blend/2008" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+    mc:Ignorable="d" x:Class="PageDownloadPlugin"
+    PanScroll="PanBack">
+    <local:MyScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" x:Name="PanBack">
+        <StackPanel Margin="25,25,25,25">
+            <local:MyCard Title="插件市场" Margin="0,0,0,15">
+                <StackPanel Margin="25,40,25,20">
+                    <TextBlock FontSize="12" Opacity="0.7" TextWrapping="Wrap"
+                               Text="插件可以给启动器加一点自己想要的功能：Lua 脚本、VB / C# 脚本与 DLL 都可以。&#xa;插件与本程序拥有相同权限，请只安装来源可信的插件；这里安装的插件可以在 设置 → 启动 中开关或卸载。" />
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <local:MyTextBox x:Name="TextSearch" HintText="搜索插件名或描述" Height="35" />
+                        <local:MyButton x:Name="BtnRefresh" Grid.Column="1" Text="刷新" Height="35" MinWidth="90" Padding="13,0" Margin="12,0,0,0" />
+                        <local:MyButton x:Name="BtnInstallLocal" Grid.Column="2" Text="安装插件包" Height="35" MinWidth="120" Padding="13,0" Margin="12,0,0,0" />
+                    </Grid>
+                    <StackPanel x:Name="PanList" Margin="0,14,0,0" />
+                </StackPanel>
+            </local:MyCard>
+        </StackPanel>
+    </local:MyScrollViewer>
+</local:MyPageRight>

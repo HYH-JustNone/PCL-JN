@@ -652,8 +652,8 @@ PreFin:
                 If Entry.Loaded Then
                     Dim BtnReload As New MyButton With {
                         .Text = "重载",
-                        .Height = 22,
-                        .Padding = New Thickness(9, 0, 9, 0),
+                        .Height = 26,
+                        .Padding = New Thickness(11, 0, 11, 0),
                         .Margin = New Thickness(8, 0, 0, 0),
                         .VerticalAlignment = VerticalAlignment.Center
                     }
@@ -701,14 +701,14 @@ PreFin:
                 '加载失败时的恢复操作
                 If Not CapturedEntry.Loaded AndAlso Not String.IsNullOrEmpty(CapturedEntry.ErrorMessage) Then
                     Dim FixPanel As New StackPanel With {.Orientation = Orientation.Horizontal, .Margin = New Thickness(0, 2, 0, 10)}
-                    Dim BtnDisableOne As New MyButton With {.Text = "禁用", .Height = 26, .Padding = New Thickness(11, 0, 11, 0), .Margin = New Thickness(0, 0, 8, 0)}
+                    Dim BtnDisableOne As New MyButton With {.Text = "禁用", .Height = 30, .Padding = New Thickness(11, 0, 11, 0), .Margin = New Thickness(0, 0, 8, 0)}
                     AddHandler BtnDisableOne.Click,
                     Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
                         Plugin.PluginManager.SetPluginEnabled(CapturedEntry.Id, False)
                         Hint("插件已禁用，重启后生效")
                     End Sub
                     FixPanel.Children.Add(BtnDisableOne)
-                    Dim BtnDeleteOne As New MyButton With {.Text = "删除", .Height = 26, .Padding = New Thickness(11, 0, 11, 0), .Margin = New Thickness(0, 0, 8, 0)}
+                    Dim BtnDeleteOne As New MyButton With {.Text = "删除", .Height = 30, .Padding = New Thickness(11, 0, 11, 0), .Margin = New Thickness(0, 0, 8, 0)}
                     AddHandler BtnDeleteOne.Click,
                     Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
                         If MyMsgBox("确定删除插件「" & CapturedEntry.Name & "」吗？" & vbCrLf & "插件文件夹会被永久删除，无法恢复。", "删除插件", "删除", "取消") <> 1 Then Return
@@ -721,7 +721,7 @@ PreFin:
                         End Try
                     End Sub
                     FixPanel.Children.Add(BtnDeleteOne)
-                    Dim BtnOpenOne As New MyButton With {.Text = "打开目录", .Height = 26, .Padding = New Thickness(11, 0, 11, 0)}
+                    Dim BtnOpenOne As New MyButton With {.Text = "打开目录", .Height = 30, .Padding = New Thickness(11, 0, 11, 0)}
                     AddHandler BtnOpenOne.Click,
                     Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
                         If DirectoryUtils.Exists(CapturedEntry.Folder) Then OpenExplorer(CapturedEntry.Folder)
@@ -760,14 +760,7 @@ PreFin:
     Private Sub BtnPluginInstall_Click(sender As Object, e As MouseButtonEventArgs) Handles BtnPluginInstall.Click
         Dim FileName As String = Dialogs.SelectFile("选择插件包", False, filter:={({"pjnp"}, "PCL-JN 插件包")}).FirstOrDefault()
         If String.IsNullOrEmpty(FileName) Then Return
-        Try
-            Dim Id As String = Plugin.PluginManager.InstallPluginPackage(FileName)
-            Plugin.PluginManager.LoadAll()
-            RefreshPlugins()
-            Hint($"插件已安装：{Id}，重启后生效", HintType.Green)
-        Catch ex As Exception
-            Hint("安装失败：" & ex.Message, HintType.Red)
-        End Try
+        InstallPackageWithConfirm(FileName, False, Sub() RefreshPlugins())
     End Sub
 
     '插件市场
@@ -853,16 +846,21 @@ PreFin:
             Dim CanUpdate As Boolean = IsInstalled AndAlso Plugin.PluginManager.IsNewerVersion(Item.Version, InstalledEntry.Version)
             Dim InstallButton As New MyButton With {
                 .Text = If(CanUpdate, "更新", If(IsInstalled, "已安装", "安装")),
-                .Height = 28,
-                .Padding = New Thickness(13, 0, 13, 0),
+                .Height = 32,
+                .Padding = New Thickness(15, 0, 15, 0),
                 .VerticalAlignment = VerticalAlignment.Top
             }
             InstallButton.IsEnabled = CanUpdate OrElse Not IsInstalled
             Dim Target As Plugin.MarketPlugin = Item
             Dim TargetUpgrade As Boolean = CanUpdate
-            AddHandler InstallButton.Click, Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
-                                                InstallFromMarketWithConfirm(Target, TargetUpgrade)
-                                            End Sub
+            AddHandler InstallButton.Click,
+            Sub(Sender2 As Object, Ev2 As MouseButtonEventArgs)
+                InstallFromMarketWithConfirm(Target, TargetUpgrade,
+                                             Sub()
+                                                 RefreshPlugins()
+                                                 RenderPluginMarket()
+                                             End Sub)
+            End Sub
             Grid.SetColumn(InstallButton, 1)
             Row.Children.Add(InstallButton)
             PanPluginMarketItems.Children.Add(Row)
@@ -872,7 +870,10 @@ PreFin:
         End If
     End Sub
 
-    Private Sub InstallFromMarketWithConfirm(Item As Plugin.MarketPlugin, Optional Upgrade As Boolean = False)
+    ''' <summary>
+    ''' 弹窗确认后在后台安装/更新市场插件，完成后在 UI 线程调用 OnDone。可被其它页面复用。
+    ''' </summary>
+    Friend Shared Sub InstallFromMarketWithConfirm(Item As Plugin.MarketPlugin, Optional Upgrade As Boolean = False, Optional OnDone As Action = Nothing)
         Dim PermissionText As String = If(Item.Permissions.Count = 0, "无", String.Join("、", Item.Permissions))
         Dim ActionText As String = If(Upgrade, "更新", "安装")
         If MyMsgBox("确定" & ActionText & "插件「" & Item.Name & "」吗？" & vbCrLf & vbCrLf &
@@ -884,8 +885,27 @@ PreFin:
                                Dim Id As String = Plugin.PluginManager.InstallFromMarket(Item, Upgrade)
                                RunInUi(Sub()
                                            Plugin.PluginManager.LoadAll()
-                                           RefreshPlugins()
-                                           RenderPluginMarket()
+                                           OnDone?.Invoke()
+                                           Hint($"插件已{ActionText}：{Id}", HintType.Green)
+                                       End Sub)
+                           Catch ex As Exception
+                               RunInUi(Sub() Hint(ActionText & "失败：" & ex.Message, HintType.Red))
+                           End Try
+                       End Sub, "Plugin Install")
+    End Sub
+
+    ''' <summary>
+    ''' 弹窗确认后在后台安装本地 .pjnp 插件包，完成后在 UI 线程调用 OnDone。可被其它页面复用。
+    ''' </summary>
+    Friend Shared Sub InstallPackageWithConfirm(PackagePath As String, Optional Upgrade As Boolean = False, Optional OnDone As Action = Nothing)
+        Dim ActionText As String = If(Upgrade, "更新", "安装")
+        If MyMsgBox("确定" & ActionText & "插件包吗？" & vbCrLf & vbCrLf & PackagePath, ActionText & "插件", ActionText, "取消") <> 1 Then Return
+        RunInNewThread(Sub()
+                           Try
+                               Dim Id As String = Plugin.PluginManager.InstallPluginPackage(PackagePath, Upgrade)
+                               RunInUi(Sub()
+                                           Plugin.PluginManager.LoadAll()
+                                           OnDone?.Invoke()
                                            Hint($"插件已{ActionText}：{Id}", HintType.Green)
                                        End Sub)
                            Catch ex As Exception
