@@ -1,6 +1,7 @@
 Imports System.CodeDom.Compiler
 Imports System.Diagnostics
 Imports System.Reflection
+Imports System.Threading
 Imports MoonSharp.Interpreter
 
 Namespace Plugin
@@ -87,6 +88,19 @@ Namespace Plugin
         ''' 插件入口 dll 的文件名，相对于插件目录。
         ''' </summary>
         Public Property EntryFile As String = ""
+        ''' <summary>
+        ''' 插件声明的权限：command（执行命令）、file（读写插件目录）。默认没有任何权限。
+        ''' </summary>
+        Public Property Permissions As New List(Of String)
+    End Class
+
+    ''' <summary>
+    ''' 插件注册到设置页的菜单项。
+    ''' </summary>
+    Public Class PluginMenuItem
+        Public Property PluginId As String = ""
+        Public Property Text As String = ""
+        Public Property Callback As Action
     End Class
 
     ''' <summary>
@@ -95,8 +109,11 @@ Namespace Plugin
     Public Module PluginManager
 
         Private ReadOnly PluginLock As New Object
+        '菜单项单独用一把锁：插件在 OnLoad 里注册菜单时，PluginLock 正被加载流程持有
+        Private ReadOnly MenuLock As New Object
         Private PluginEntries As New List(Of PluginEntry)
         Private LoadedPlugins As New List(Of PluginRecord)
+        Private MenuItems As New List(Of PluginMenuItem)
 
         Private Class PluginRecord
             Public Entry As PluginEntry
@@ -168,6 +185,13 @@ Namespace Plugin
                 }
                 If String.IsNullOrEmpty(Entry.Name) Then Entry.Name = Id
                 Entry.Enabled = GetEnabledState(State, Id)
+                '读取权限声明
+                Dim PermissionToken As JToken = Meta("permissions")
+                If PermissionToken IsNot Nothing AndAlso PermissionToken.Type = JTokenType.Array Then
+                    For Each Item As JToken In CType(PermissionToken, JArray)
+                        Entry.Permissions.Add(Item.ToString().Trim().ToLowerInvariant())
+                    Next
+                End If
             Catch ex As Exception
                 Logger.Warn(ex, $"读取插件信息失败：{MetaFile}")
                 Return
@@ -187,7 +211,7 @@ Namespace Plugin
                 Dim Instance As IPlugin = Nothing
                 If Path.GetExtension(EntryPath).ToLowerInvariant() = ".lua" Then
                     'Lua 脚本插件：由内置的 MoonSharp 解释器驱动
-                    Instance = New LuaPlugin(EntryPath, Context)
+                    Instance = New LuaPlugin(Entry.Id, EntryPath, Context, Entry.Permissions)
                 Else
                     Dim PluginAssembly As Assembly = LoadPluginAssembly(EntryPath)
                     Dim AssemblyTypes As Type()
@@ -291,6 +315,8 @@ Namespace Plugin
             Implements IPluginCrashHandler
 
             Private ReadOnly Engine As Script
+            Private ReadOnly PluginId As String
+            Private ReadOnly Perms As List(Of String)
 
             '允许插件读写的启动器设置（只放数值型与布尔型，避免误改路径等关键项）
             Private Shared ReadOnly SettingKinds As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase) From {
@@ -300,7 +326,9 @@ Namespace Plugin
                 {"UiBackgroundColorful", "bool"}
             }
 
-            Public Sub New(EntryPath As String, Context As IPluginContext)
+            Public Sub New(Id As String, EntryPath As String, Context As IPluginContext, Permissions As List(Of String))
+                PluginId = Id
+                Perms = Permissions
                 Engine = New Script(CoreModules.Preset_HardSandbox)
                 '用纯 Lua 表 + 回调暴露 API，不把 .NET 对象直接丢给脚本，避免反射与类型转换问题
                 Dim Api As New Table(Engine)
@@ -313,6 +341,10 @@ Namespace Plugin
                 Api.Set("Now", DynValue.NewCallback(Function(C, A) DynValue.NewString(Date.Now.ToString("yyyy-MM-dd HH:mm:ss"))))
                 Api.Set("Tick", DynValue.NewCallback(Function(C, A) DynValue.NewNumber((Date.UtcNow - New Date(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds)))
                 Api.Set("GetInstance", DynValue.NewCallback(Function(C, A) ApiGetInstance()))
+                Api.Set("GetVersions", DynValue.NewCallback(Function(C, A) ApiGetVersions()))
+                Api.Set("GetMods", DynValue.NewCallback(Function(C, A) ApiGetMods()))
+                Api.Set("GetJavaList", DynValue.NewCallback(Function(C, A) ApiGetJavaList()))
+                Api.Set("GetMemoryInfo", DynValue.NewCallback(Function(C, A) ApiGetMemoryInfo()))
                 Api.Set("Backup", DynValue.NewCallback(Function(C, A) ApiBackup()))
                 Api.Set("OpenUrl", DynValue.NewCallback(Function(C, A) ApiOpenUrl(A)))
                 Api.Set("OpenFolder", DynValue.NewCallback(Function(C, A) ApiOpenFolder(A)))
@@ -321,9 +353,15 @@ Namespace Plugin
                 Api.Set("SetSettingValue", DynValue.NewCallback(Function(C, A) ApiSetSettingValue(A)))
                 Api.Set("ReadFile", DynValue.NewCallback(Function(C, A) ApiReadFile(Context, A)))
                 Api.Set("WriteFile", DynValue.NewCallback(Function(C, A) ApiWriteFile(Context, A)))
+                Api.Set("AddMenuItem", DynValue.NewCallback(Function(C, A) ApiAddMenuItem(A)))
                 Engine.Globals.Set("pcl", DynValue.NewTable(Api))
                 Engine.DoFile(EntryPath)
             End Sub
+
+            '是否声明了某项权限
+            Private Function HasPermission(Name As String) As Boolean
+                Return Perms IsNot Nothing AndAlso Perms.Any(Function(P) String.Equals(P, Name, StringComparison.OrdinalIgnoreCase))
+            End Function
 
             Private Shared Function ArgText(Args As CallbackArguments) As String
                 If Args.Count <= 0 Then Return ""
@@ -415,8 +453,12 @@ Namespace Plugin
                 Return DynValue.True
             End Function
 
-            '执行外部命令，必须先经过用户确认
-            Private Shared Function ApiRunCommand(Args As CallbackArguments) As DynValue
+            '执行外部命令，必须先声明 command 权限并经过用户确认
+            Private Function ApiRunCommand(Args As CallbackArguments) As DynValue
+                If Not HasPermission("command") Then
+                    Logger.Warn($"插件 {PluginId} 未声明 command 权限，已拒绝执行命令")
+                    Return DynValue.False
+                End If
                 Dim Command As String = ArgText(Args)
                 If Command = "" Then Return DynValue.False
                 Dim Allowed As Boolean = False
@@ -480,7 +522,8 @@ Namespace Plugin
                 End Try
             End Function
 
-            Private Shared Function ApiReadFile(Context As IPluginContext, Args As CallbackArguments) As DynValue
+            Private Function ApiReadFile(Context As IPluginContext, Args As CallbackArguments) As DynValue
+                If Not HasPermission("file") Then Return DynValue.NewString("")
                 Dim Full As String = SafePluginPath(Context.DataPath, ArgText(Args))
                 If Full = "" OrElse Not FileUtils.Exists(Full) Then Return DynValue.NewString("")
                 Try
@@ -491,7 +534,8 @@ Namespace Plugin
                 End Try
             End Function
 
-            Private Shared Function ApiWriteFile(Context As IPluginContext, Args As CallbackArguments) As DynValue
+            Private Function ApiWriteFile(Context As IPluginContext, Args As CallbackArguments) As DynValue
+                If Not HasPermission("file") Then Return DynValue.False
                 If Args.Count < 2 Then Return DynValue.False
                 Dim Full As String = SafePluginPath(Context.DataPath, Args(0).ToPrintString())
                 If Full = "" Then Return DynValue.False
@@ -505,6 +549,141 @@ Namespace Plugin
                 End Try
             End Function
 
+            '所有已安装版本
+            Private Function ApiGetVersions() As DynValue
+                Dim Result As New Table(Engine)
+                Try
+                    Dim Index As Integer = 1
+                    For Each Group As KeyValuePair(Of McInstanceCardType, List(Of McInstance)) In McInstanceList.ToArray()
+                        For Each Inst As McInstance In Group.Value
+                            Dim Item As New Table(Engine)
+                            Item.Set("name", DynValue.NewString(Inst.Name))
+                            Dim Loader As String = "原版"
+                            Dim GameVersion As String = ""
+                            Try
+                                If Inst.Version.ModLoaders.HasFlagF(ModLoaders.Fabric) Then
+                                    Loader = "fabric"
+                                ElseIf Inst.Version.ModLoaders.HasFlagF(ModLoaders.NeoForge) Then
+                                    Loader = "neoforge"
+                                ElseIf Inst.Version.ModLoaders.HasFlagF(ModLoaders.Forge) Then
+                                    Loader = "forge"
+                                End If
+                                GameVersion = Inst.Version.VanillaName
+                                If GameVersion = "Unknown" Then GameVersion = ""
+                            Catch
+                            End Try
+                            Item.Set("loader", DynValue.NewString(Loader))
+                            Item.Set("game_version", DynValue.NewString(GameVersion))
+                            Result.Set(Index, DynValue.NewTable(Item))
+                            Index += 1
+                        Next
+                    Next
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取版本列表失败")
+                End Try
+                Return DynValue.NewTable(Result)
+            End Function
+
+            '当前实例的 Mod 列表
+            Private Function ApiGetMods() As DynValue
+                Dim Result As New Table(Engine)
+                Try
+                    Dim Inst As McInstance = McInstanceSelected
+                    If Inst Is Nothing Then Return DynValue.NewTable(Result)
+                    Dim Folder As String = Inst.PathIndie & "mods\"
+                    If Not DirectoryUtils.Exists(Folder) Then Return DynValue.NewTable(Result)
+                    Dim Index As Integer = 1
+                    For Each FilePath As String In DirectoryUtils.EnumerateFiles(Folder, False)
+                        If Not FilePath.ToLowerInvariant().EndsWith(".jar") Then Continue For
+                        Dim Info As ModChecker.ModInfo = ModChecker.ReadInfo(FilePath)
+                        Dim Item As New Table(Engine)
+                        Item.Set("file", DynValue.NewString(Path.GetFileName(FilePath)))
+                        If Info IsNot Nothing Then
+                            Item.Set("id", DynValue.NewString(If(Info.Id, "")))
+                            Item.Set("name", DynValue.NewString(If(Info.Name, "")))
+                            Item.Set("version", DynValue.NewString(If(Info.Version, "")))
+                            Item.Set("loader", DynValue.NewString(If(Info.Loader, "")))
+                        Else
+                            Item.Set("id", DynValue.NewString(""))
+                            Item.Set("name", DynValue.NewString(""))
+                            Item.Set("version", DynValue.NewString(""))
+                            Item.Set("loader", DynValue.NewString(""))
+                        End If
+                        Result.Set(Index, DynValue.NewTable(Item))
+                        Index += 1
+                    Next
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取 Mod 列表失败")
+                End Try
+                Return DynValue.NewTable(Result)
+            End Function
+
+            '已识别的 Java 列表
+            Private Function ApiGetJavaList() As DynValue
+                Dim Result As New Table(Engine)
+                Try
+                    Dim Index As Integer = 1
+                    For Each Entry In Configs.JavaList.Get()
+                        Dim Item As New Table(Engine)
+                        Item.Set("path", DynValue.NewString(Entry.Folder))
+                        Dim VersionText As String = ""
+                        If Entry.Version IsNot Nothing Then VersionText = Entry.Version.ToString()
+                        Item.Set("version", DynValue.NewString(VersionText))
+                        Result.Set(Index, DynValue.NewTable(Item))
+                        Index += 1
+                    Next
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取 Java 列表失败")
+                End Try
+                Return DynValue.NewTable(Result)
+            End Function
+
+            '系统内存信息（MB）
+            Private Function ApiGetMemoryInfo() As DynValue
+                Dim Result As New Table(Engine)
+                Try
+                    Result.Set("total_mb", DynValue.NewNumber(My.Computer.Info.TotalPhysicalMemory / 1024 / 1024))
+                    Result.Set("available_mb", DynValue.NewNumber(My.Computer.Info.AvailablePhysicalMemory / 1024 / 1024))
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取内存信息失败")
+                End Try
+                Return DynValue.NewTable(Result)
+            End Function
+
+            '在设置页插件卡片里注册一个按钮
+            Private Function ApiAddMenuItem(Args As CallbackArguments) As DynValue
+                If Args.Count < 2 Then Return DynValue.False
+                Dim Text As String = Args(0).ToPrintString()
+                Dim Target As DynValue = Args(1)
+                If Target.Type <> DataType.Function Then Return DynValue.False
+                RegisterMenuItem(PluginId, Text, Sub()
+                                                      RunWithTimeout("菜单项 " & Text,
+                                                                     Sub() Engine.Call(Target, New DynValue() {}), 15000)
+                                                  End Sub)
+                Return DynValue.True
+            End Function
+
+            ''' <summary>
+            ''' 在后台线程执行脚本，超时则强制中断，避免插件死循环卡死启动器。
+            ''' </summary>
+            Private Function RunWithTimeout(Label As String, Action As Action, Optional TimeoutMs As Integer = 10000) As Boolean
+                Dim Worker As New Thread(Sub()
+                                             Try
+                                                 Action()
+                                             Catch ex As Exception
+                                                 Logger.Warn(ex, $"插件 {PluginId} 执行 {Label} 失败")
+                                             End Try
+                                         End Sub) With {.IsBackground = True}
+                Worker.Start()
+                If Worker.Join(TimeoutMs) Then Return True
+                Logger.Warn($"插件 {PluginId} 的 {Label} 超过 {TimeoutMs \ 1000} 秒未结束，已强制中断")
+                Try
+                    Worker.Abort()
+                Catch
+                End Try
+                Return False
+            End Function
+
             '调用脚本里的全局函数；脚本没定义该函数时直接跳过
             Private Sub CallScript(Name As String, ParamArray Args As Object())
                 Dim Target As DynValue = Engine.Globals.Get(Name)
@@ -514,23 +693,23 @@ Namespace Plugin
             End Sub
 
             Public Sub OnLoad(Context As IPluginContext) Implements IPlugin.OnLoad
-                CallScript("OnLoad")
+                RunWithTimeout("OnLoad", Sub() CallScript("OnLoad"), 5000)
             End Sub
 
             Public Sub OnUnload() Implements IPlugin.OnUnload
-                CallScript("OnUnload")
+                RunWithTimeout("OnUnload", Sub() CallScript("OnUnload"), 3000)
             End Sub
 
             Public Sub OnGameLaunching(InstanceName As String) Implements IPlugin.OnGameLaunching
-                CallScript("OnGameLaunching", InstanceName)
+                RunWithTimeout("OnGameLaunching", Sub() CallScript("OnGameLaunching", InstanceName), 15000)
             End Sub
 
             Public Sub OnGameExited(ExitCode As Integer) Implements IPlugin.OnGameExited
-                CallScript("OnGameExited", ExitCode)
+                RunWithTimeout("OnGameExited", Sub() CallScript("OnGameExited", ExitCode), 15000)
             End Sub
 
             Public Sub OnGameCrashed(ReportFolder As String) Implements IPluginCrashHandler.OnGameCrashed
-                CallScript("OnGameCrashed", ReportFolder)
+                RunWithTimeout("OnGameCrashed", Sub() CallScript("OnGameCrashed", ReportFolder), 15000)
             End Sub
         End Class
 
@@ -568,8 +747,28 @@ Namespace Plugin
                         .Enabled = E.Enabled,
                         .Loaded = E.Loaded,
                         .ErrorMessage = E.ErrorMessage,
-                        .EntryFile = E.EntryFile
+                        .EntryFile = E.EntryFile,
+                        .Permissions = New List(Of String)(E.Permissions)
                     }).ToList()
+            End SyncLock
+        End Function
+
+        ''' <summary>
+        ''' 由插件注册一个显示在设置页的菜单项。
+        ''' </summary>
+        Public Sub RegisterMenuItem(PluginId As String, Text As String, Callback As Action)
+            If String.IsNullOrWhiteSpace(Text) OrElse Callback Is Nothing Then Return
+            SyncLock MenuLock
+                MenuItems.Add(New PluginMenuItem With {.PluginId = PluginId, .Text = Text.Trim(), .Callback = Callback})
+            End SyncLock
+        End Sub
+
+        ''' <summary>
+        ''' 获取某个插件注册的菜单项。
+        ''' </summary>
+        Public Function GetMenuItems(PluginId As String) As List(Of PluginMenuItem)
+            SyncLock MenuLock
+                Return MenuItems.Where(Function(M) String.Equals(M.PluginId, PluginId, StringComparison.OrdinalIgnoreCase)).ToList()
             End SyncLock
         End Function
 
@@ -645,6 +844,9 @@ Namespace Plugin
                 Record.Entry.Loaded = False
             Next
             LoadedPlugins.Clear()
+            SyncLock MenuLock
+                MenuItems.Clear()
+            End SyncLock
         End Sub
 
         ''' <summary>

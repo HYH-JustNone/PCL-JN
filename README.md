@@ -56,11 +56,21 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
   "version": "1.0.0",
   "author": "你的名字",
   "description": "插件说明",
-  "entry": "plugin.vb"
+  "entry": "plugin.lua",
+  "permissions": ["file"]
 }
 ```
 
 `id` 和 `entry` 为必填项。插件的启用状态保存在 `%AppData%\PCL\Plugins\plugins.json`，在设置页修改开关后需要重启启动器才会生效。
+
+`permissions` 是权限声明，会显示在设置页的插件列表里：
+
+| 权限 | 允许做的事 |
+| --- | --- |
+| `file` | 读写插件自己目录下的文件 |
+| `command` | 调用 `pcl.RunCommand` 执行外部命令（仍需用户逐次确认） |
+
+不声明就调不通对应接口——这是给用户看的"这个插件想干什么"。
 
 ### 写一个 Lua 脚本插件（推荐）
 
@@ -89,6 +99,11 @@ Lua 插件运行在 **MoonSharp 硬沙箱**中：没有 `io`、`os`、`require`�
 | `pcl.Hint(文本)` / `pcl.Warn(文本)` | 左下角提示（Warn 为红色） |
 | `pcl.GetSetting(键)` / `pcl.SetSetting(键, 值)` | 插件私有设置，存盘，重启后还在 |
 | `pcl.GetInstance()` | 返回 `{name, loader, game_version, mods, path}`，没选中实例时返回空字符串 |
+| `pcl.GetVersions()` | 所有已安装版本，每项含 `name` / `loader` / `game_version` |
+| `pcl.GetMods()` | 当前实例的 Mod 列表，每项含 `file` / `id` / `name` / `version` / `loader` |
+| `pcl.GetJavaList()` | 已识别的 Java，每项含 `path` / `version` |
+| `pcl.GetMemoryInfo()` | 返回 `{total_mb, available_mb}` |
+| `pcl.AddMenuItem(文本, 函数)` | 在设置页该插件下方加一个按钮，点击执行函数 |
 | `pcl.Now()` / `pcl.Tick()` | 当前时间文本 / Unix 毫秒时间戳 |
 | `pcl.Backup()` | 立即备份当前实例的配置与存档，返回备份目录 |
 | `pcl.OpenUrl(网址)` / `pcl.OpenFolder(路径)` | 打开网页 / 文件夹 |
@@ -99,7 +114,22 @@ Lua 插件运行在 **MoonSharp 硬沙箱**中：没有 `io`、`os`、`require`�
 
 四个回调都可以只写需要的，没写的会被跳过。另外可以额外定义 `OnGameCrashed(报告目录)`，游戏崩溃并完成分析后会调用。
 
-> `OnLoad` 执行时启动器还没选中版本，`pcl.GetInstance()` 通常返回空；需要实例信息请在 `OnGameLaunching` 里取。
+需要界面上有个按钮时，用 `pcl.AddMenuItem` 注册（按钮会出现在设置页该插件下方）：
+
+```lua
+pcl.AddMenuItem("导出 Mod 清单", function()
+    local text = ""
+    for _, mod in ipairs(pcl.GetMods()) do
+        text = text .. mod.name .. " " .. mod.version .. "\n"
+    end
+    pcl.WriteFile("mods.txt", text)   -- 需要 file 权限
+    pcl.Hint("已导出，共 " .. #pcl.GetMods() .. " 个")
+end)
+```
+
+> `OnLoad` 执行时启动器还没扫描完版本，`pcl.GetInstance()` 和 `pcl.GetVersions()` 可能返回空；需要这些信息请在 `OnGameLaunching` 或菜单函数里取。
+>
+> 每个回调都有超时保护（`OnLoad` 5 秒，其余 15 秒），脚本里写 `while true do end` 会被强制中断，不会卡死启动器。
 
 ### 写一个 VB / C# 脚本插件
 

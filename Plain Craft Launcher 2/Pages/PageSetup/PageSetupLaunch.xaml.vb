@@ -610,6 +610,18 @@ PreFin:
                     .Opacity = 0.7,
                     .Margin = New Thickness(0, 2, 0, 0)
                 })
+                '权限声明
+                Dim PermText As String = "权限：无"
+                If Entry.Permissions IsNot Nothing AndAlso Entry.Permissions.Count > 0 Then
+                    PermText = "权限：" & String.Join("、", Entry.Permissions.Select(
+                        Function(P) If(P = "command", "执行命令", If(P = "file", "读写插件目录", P))))
+                End If
+                Info.Children.Add(New TextBlock With {
+                    .Text = PermText,
+                    .FontSize = 11,
+                    .Opacity = 0.7,
+                    .Margin = New Thickness(0, 2, 0, 0)
+                })
                 If Not String.IsNullOrEmpty(Entry.ErrorMessage) Then
                     Info.Children.Add(New TextBlock With {
                         .Text = "加载失败：" & Entry.ErrorMessage,
@@ -637,6 +649,32 @@ PreFin:
                 Grid.SetColumn(Check, 1)
                 Row.Children.Add(Check)
                 PanPlugins.Children.Add(Row)
+                '插件注册的菜单项
+                Dim MenuItems = Plugin.PluginManager.GetMenuItems(Entry.Id)
+                If Entry.Loaded AndAlso MenuItems IsNot Nothing AndAlso MenuItems.Count > 0 Then
+                    Dim MenuPanel As New WrapPanel With {.Margin = New Thickness(0, 2, 0, 10)}
+                    For Each Item In MenuItems
+                        Dim Btn As New MyButton With {
+                            .Text = Item.Text,
+                            .Height = 26,
+                            .Padding = New Thickness(11, 0, 11, 0),
+                            .Margin = New Thickness(0, 0, 8, 0)
+                        }
+                        Dim Callback As Action = Item.Callback
+                        AddHandler Btn.Click,
+                        Sub(Sender As Object, Ev As MouseButtonEventArgs)
+                            RunInNewThread(Sub()
+                                               Try
+                                                   Callback()
+                                               Catch ex As Exception
+                                                   Logger.Warn(ex, "插件菜单项执行失败")
+                                               End Try
+                                           End Sub, "Plugin Menu")
+                        End Sub
+                        MenuPanel.Children.Add(Btn)
+                    Next
+                    PanPlugins.Children.Add(MenuPanel)
+                End If
             Next
         Catch ex As Exception
             Logger.Error(ex, "刷新插件列表失败")
