@@ -57,7 +57,9 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
   "author": "你的名字",
   "description": "插件说明",
   "entry": "plugin.lua",
-  "permissions": ["file"]
+  "permissions": ["network", "file"],
+  "requires": [],
+  "update": "https://example.com/my-plugin/version.json"
 }
 ```
 
@@ -67,10 +69,15 @@ MSBuild "Plain Craft Launcher 2.vbproj" -p:Configuration=Release
 
 | 权限 | 允许做的事 |
 | --- | --- |
+| `network` | 调用 `pcl.HttpGet` / `pcl.HttpPost` 访问网络 |
 | `file` | 读写插件自己目录下的文件 |
 | `command` | 调用 `pcl.RunCommand` 执行外部命令（仍需用户逐次确认） |
 
 不声明就调不通对应接口——这是给用户看的"这个插件想干什么"。
+
+`requires` 可声明依赖的其它插件 id，缺少依赖时会拒绝加载并在设置页显示原因。`update` 填一个返回 `{"version":"1.2.0"}` 的地址，启动时会自动检查并提示新版本（不会自动更新）。
+
+每个插件还有自己的日志：`Plugins\<id>\log.txt`，`pcl.Log` 会同时写进去。
 
 ### 写一个 Lua 脚本插件（推荐）
 
@@ -103,6 +110,17 @@ Lua 插件运行在 **MoonSharp 硬沙箱**中：没有 `io`、`os`、`require`�
 | `pcl.GetMods()` | 当前实例的 Mod 列表，每项含 `file` / `id` / `name` / `version` / `loader` |
 | `pcl.GetJavaList()` | 已识别的 Java，每项含 `path` / `version` |
 | `pcl.GetMemoryInfo()` | 返回 `{total_mb, available_mb}` |
+| `pcl.GetBackups()` | 当前实例的备份列表，每项含 `name` / `path` / `time` |
+| `pcl.GetCrashReports()` | 最近 10 份崩溃报告，每项含 `file` / `path` / `time` |
+| `pcl.GetOsInfo()` | 返回 `{os, cpu_count, total_mb, is_64bit}` |
+| `pcl.HttpGet(网址)` / `pcl.HttpPost(网址, 内容)` | 同步 HTTP 请求，需要 `network` 权限 |
+| `pcl.JsonEncode(值)` / `pcl.JsonDecode(文本)` | Lua 表与 JSON 互转 |
+| `pcl.Launch(版本名)` | 弹窗确认后启动指定版本 |
+| `pcl.SelectInstance(版本名)` | 切换当前选中的版本 |
+| `pcl.StopGame()` | 停止启动或关闭正在运行的游戏 |
+| `pcl.RestoreBackup(目录)` | 弹窗确认后回滚备份 |
+| `pcl.CopyToClipboard(文本)` / `pcl.ShowDialog(标题, 内容)` | 复制到剪贴板 / 弹出对话框 |
+| `pcl.SetTickInterval(秒)` | 以指定间隔触发 `OnTick`，传 0 关闭 |
 | `pcl.AddMenuItem(文本, 函数)` | 在设置页该插件下方加一个按钮，点击执行函数 |
 | `pcl.Now()` / `pcl.Tick()` | 当前时间文本 / Unix 毫秒时间戳 |
 | `pcl.Backup()` | 立即备份当前实例的配置与存档，返回备份目录 |
@@ -112,7 +130,20 @@ Lua 插件运行在 **MoonSharp 硬沙箱**中：没有 `io`、`os`、`require`�
 | `pcl.ReadFile(相对路径)` / `pcl.WriteFile(相对路径, 内容)` | 读写插件自己目录下的文件，越权路径会被拒绝 |
 | `pcl.Version` | 启动器版本 |
 
-四个回调都可以只写需要的，没写的会被跳过。另外可以额外定义 `OnGameCrashed(报告目录)`，游戏崩溃并完成分析后会调用。
+可以按需定义这些全局函数，没写的会被跳过：
+
+| 回调 | 触发时机 | 参数 |
+| --- | --- | --- |
+| `OnLoad` | 插件加载完成 | 无 |
+| `OnGameLaunching` | 游戏启动前 | 版本名 |
+| `OnGameExited` | 游戏进程退出 | 退出码 |
+| `OnGameCrashed` | 崩溃并完成分析 | 崩溃报告目录 |
+| `OnPageChanged` | 切换页面 | 页面名 |
+| `OnLaunchFailed` | 启动失败 | 错误信息 |
+| `OnVersionInstalled` | 版本安装完成 | 加载器名 |
+| `OnInstanceSelected` | 选中版本变化 | 版本名 |
+| `OnTick` | `pcl.SetTickInterval` 设置的定时器 | 无 |
+| `OnUnload` | 插件卸载或启动器关闭 | 无 |
 
 需要界面上有个按钮时，用 `pcl.AddMenuItem` 注册（按钮会出现在设置页该插件下方）：
 

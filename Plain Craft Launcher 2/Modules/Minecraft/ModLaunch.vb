@@ -211,6 +211,11 @@ Public Module ModLaunch
             End Select
         Catch ex As Exception
             ex.ThrowIfCanceled()
+            'PCL-JN：通知插件启动失败
+            Try
+                Plugin.PluginManager.RaiseLaunchFailed(ex.Message)
+            Catch
+            End Try
             Dim CurrentEx = ex
 NextInner:
             If CurrentEx.Message.StartsWithF("$") Then

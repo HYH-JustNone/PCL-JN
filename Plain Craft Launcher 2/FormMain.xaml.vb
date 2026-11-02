@@ -1384,6 +1384,11 @@ Public Class FormMain
     ''' 切换页面，并引起对应选择 UI 的改变。
     ''' </summary>
     Public Sub PageChange(Stack As PageStackData, Optional SubType As PageSubType = PageSubType.Default)
+        'PCL-JN：通知插件页面已切换
+        Try
+            Plugin.PluginManager.RaisePageChanged(Stack.Page.ToString())
+        Catch
+        End Try
         If PageNameGet(Stack) = "" Then
             '切换到主页面
             PageChangeExit()

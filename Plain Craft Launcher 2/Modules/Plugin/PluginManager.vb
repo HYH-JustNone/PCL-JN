@@ -73,6 +73,34 @@ Namespace Plugin
     End Interface
 
     ''' <summary>
+    ''' 可选接口：实现后可以收到页面切换事件。
+    ''' </summary>
+    Public Interface IPluginPageChanged
+        Sub OnPageChanged(PageName As String)
+    End Interface
+
+    ''' <summary>
+    ''' 可选接口：实现后可以收到启动失败事件。
+    ''' </summary>
+    Public Interface IPluginLaunchFailed
+        Sub OnLaunchFailed(Reason As String)
+    End Interface
+
+    ''' <summary>
+    ''' 可选接口：实现后可以收到版本安装完成事件。
+    ''' </summary>
+    Public Interface IPluginVersionInstalled
+        Sub OnVersionInstalled(VersionName As String)
+    End Interface
+
+    ''' <summary>
+    ''' 可选接口：实现后可以收到选中版本变化事件。
+    ''' </summary>
+    Public Interface IPluginInstanceSelected
+        Sub OnInstanceSelected(VersionName As String)
+    End Interface
+
+    ''' <summary>
     ''' 供界面显示的插件信息。
     ''' </summary>
     Public Class PluginEntry
@@ -89,9 +117,21 @@ Namespace Plugin
         ''' </summary>
         Public Property EntryFile As String = ""
         ''' <summary>
-        ''' 插件声明的权限：command（执行命令）、file（读写插件目录）。默认没有任何权限。
+        ''' 插件声明的权限：command（执行命令）、file（读写插件目录）、network（访问网络）。默认没有任何权限。
         ''' </summary>
         Public Property Permissions As New List(Of String)
+        ''' <summary>
+        ''' 依赖的其它插件 id。
+        ''' </summary>
+        Public Property Requires As New List(Of String)
+        ''' <summary>
+        ''' 更新检查地址，返回形如 {"version":"1.2.0"} 的 JSON。
+        ''' </summary>
+        Public Property UpdateUrl As String = ""
+        ''' <summary>
+        ''' 插件所在文件夹。
+        ''' </summary>
+        Public Property Folder As String = ""
     End Class
 
     ''' <summary>
@@ -146,8 +186,23 @@ Namespace Plugin
                     PluginEntries.Clear()
                     DirectoryUtils.Create(PluginFolder)
                     Dim State As JObject = ReadJsonObject(StateFile)
+                    '第一遍：只读取元信息，这样依赖关系与加载顺序无关
                     For Each Folder As String In DirectoryUtils.EnumerateDirectories(PluginFolder)
-                        LoadPluginFromFolder(Folder, State)
+                        ReadPluginMeta(Folder, State)
+                    Next
+                    '第二遍：检查依赖后加载
+                    For Each Entry As PluginEntry In PluginEntries.ToList()
+                        If Not Entry.Enabled Then Continue For
+                        Dim Missing As New List(Of String)
+                        For Each RequiredId As String In Entry.Requires
+                            If Not PluginEntries.Any(Function(E) String.Equals(E.Id, RequiredId, StringComparison.OrdinalIgnoreCase)) Then Missing.Add(RequiredId)
+                        Next
+                        If Missing.Count > 0 Then
+                            Entry.ErrorMessage = "缺少依赖插件：" & String.Join("、", Missing)
+                            Logger.Warn($"插件 {Entry.Id} 未加载：{Entry.ErrorMessage}")
+                            Continue For
+                        End If
+                        LoadPlugin(Entry, Entry.Folder)
                     Next
                     Logger.Info($"插件扫描完成，共发现 {PluginEntries.Count} 个插件，已加载 {LoadedPlugins.Count} 个")
                 End SyncLock
@@ -157,9 +212,9 @@ Namespace Plugin
         End Sub
 
         ''' <summary>
-        ''' 读取插件目录中的 plugin.json 并尝试加载。
+        ''' 读取插件目录中的 plugin.json，只登记元信息，不加载。
         ''' </summary>
-        Private Sub LoadPluginFromFolder(Folder As String, State As JObject)
+        Private Sub ReadPluginMeta(Folder As String, State As JObject)
             Dim MetaFile As String = Path.Combine(Folder, "plugin.json")
             If Not FileUtils.Exists(MetaFile) Then Return
             Dim Entry As PluginEntry = Nothing
@@ -181,7 +236,9 @@ Namespace Plugin
                     .Version = GetJsonString(Meta, "version").Trim(),
                     .Author = GetJsonString(Meta, "author").Trim(),
                     .Description = GetJsonString(Meta, "description").Trim(),
-                    .EntryFile = EntryFile
+                    .EntryFile = EntryFile,
+                    .Folder = Folder,
+                    .UpdateUrl = GetJsonString(Meta, "update").Trim()
                 }
                 If String.IsNullOrEmpty(Entry.Name) Then Entry.Name = Id
                 Entry.Enabled = GetEnabledState(State, Id)
@@ -192,12 +249,43 @@ Namespace Plugin
                         Entry.Permissions.Add(Item.ToString().Trim().ToLowerInvariant())
                     Next
                 End If
+                '读取依赖声明
+                Dim RequireToken As JToken = Meta("requires")
+                If RequireToken IsNot Nothing AndAlso RequireToken.Type = JTokenType.Array Then
+                    For Each Item As JToken In CType(RequireToken, JArray)
+                        Entry.Requires.Add(Item.ToString().Trim())
+                    Next
+                End If
             Catch ex As Exception
                 Logger.Warn(ex, $"读取插件信息失败：{MetaFile}")
                 Return
             End Try
             PluginEntries.Add(Entry)
-            If Entry.Enabled Then LoadPlugin(Entry, Folder)
+        End Sub
+
+        ''' <summary>
+        ''' 后台检查插件是否有新版本，只提示不自动更新。
+        ''' </summary>
+        Private Sub CheckPluginUpdate(Entry As PluginEntry)
+            If String.IsNullOrEmpty(Entry.UpdateUrl) Then Return
+            RunInNewThread(Sub()
+                               Try
+                                   If Not Entry.UpdateUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) AndAlso
+                                      Not Entry.UpdateUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) Then Return
+                                   Using Client As New Net.Http.HttpClient()
+                                       Client.Timeout = TimeSpan.FromSeconds(10)
+                                       Dim Text As String = Client.GetStringAsync(Entry.UpdateUrl).Result
+                                       Dim Token As JToken = Text.DeserializeJson()
+                                       Dim Latest As String = GetJsonString(TryCast(Token, JObject), "version").Trim()
+                                       If Latest <> "" AndAlso Latest <> Entry.Version Then
+                                           Logger.Info($"插件 {Entry.Id} 有新版本：{Entry.Version} → {Latest}")
+                                           Hint($"插件「{Entry.Name}」有新版本 {Latest}（当前 {Entry.Version}）", HintType.Blue)
+                                       End If
+                                   End Using
+                               Catch ex As Exception
+                                   Logger.Warn(ex, $"检查插件 {Entry.Id} 更新失败")
+                               End Try
+                           End Sub, "Plugin Update Check")
         End Sub
 
         ''' <summary>
@@ -244,6 +332,7 @@ Namespace Plugin
                 Entry.ErrorMessage = ""
                 LoadedPlugins.Add(New PluginRecord With {.Entry = Entry, .Instance = Instance})
                 Logger.Info($"已加载插件：{Entry.Name}（{Entry.Id}，版本 {Entry.Version}）")
+                CheckPluginUpdate(Entry)
             Catch ex As Exception
                 Entry.Loaded = False
                 Entry.ErrorMessage = ex.Message
@@ -313,10 +402,15 @@ Namespace Plugin
         Private Class LuaPlugin
             Implements IPlugin
             Implements IPluginCrashHandler
+            Implements IPluginPageChanged
+            Implements IPluginLaunchFailed
+            Implements IPluginVersionInstalled
+            Implements IPluginInstanceSelected
 
             Private ReadOnly Engine As Script
             Private ReadOnly PluginId As String
             Private ReadOnly Perms As List(Of String)
+            Private TickTimer As Threading.Timer
 
             '允许插件读写的启动器设置（只放数值型与布尔型，避免误改路径等关键项）
             Private Shared ReadOnly SettingKinds As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase) From {
@@ -340,11 +434,25 @@ Namespace Plugin
                 Api.Set("SetSetting", DynValue.NewCallback(Function(C, A) ApiSetSetting(Context, A)))
                 Api.Set("Now", DynValue.NewCallback(Function(C, A) DynValue.NewString(Date.Now.ToString("yyyy-MM-dd HH:mm:ss"))))
                 Api.Set("Tick", DynValue.NewCallback(Function(C, A) DynValue.NewNumber((Date.UtcNow - New Date(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds)))
-                Api.Set("GetInstance", DynValue.NewCallback(Function(C, A) ApiGetInstance()))
+                Api.Set("GetInstance", DynValue.NewCallback(Function(C, A) ApiGetInstance(A)))
                 Api.Set("GetVersions", DynValue.NewCallback(Function(C, A) ApiGetVersions()))
                 Api.Set("GetMods", DynValue.NewCallback(Function(C, A) ApiGetMods()))
                 Api.Set("GetJavaList", DynValue.NewCallback(Function(C, A) ApiGetJavaList()))
                 Api.Set("GetMemoryInfo", DynValue.NewCallback(Function(C, A) ApiGetMemoryInfo()))
+                Api.Set("GetBackups", DynValue.NewCallback(Function(C, A) ApiGetBackups()))
+                Api.Set("GetCrashReports", DynValue.NewCallback(Function(C, A) ApiGetCrashReports()))
+                Api.Set("GetOsInfo", DynValue.NewCallback(Function(C, A) ApiGetOsInfo()))
+                Api.Set("HttpGet", DynValue.NewCallback(Function(C, A) ApiHttpGet(A)))
+                Api.Set("HttpPost", DynValue.NewCallback(Function(C, A) ApiHttpPost(A)))
+                Api.Set("JsonEncode", DynValue.NewCallback(Function(C, A) ApiJsonEncode(A)))
+                Api.Set("JsonDecode", DynValue.NewCallback(Function(C, A) ApiJsonDecode(A)))
+                Api.Set("Launch", DynValue.NewCallback(Function(C, A) ApiLaunch(A)))
+                Api.Set("SelectInstance", DynValue.NewCallback(Function(C, A) ApiSelectInstance(A)))
+                Api.Set("StopGame", DynValue.NewCallback(Function(C, A) ApiStopGame()))
+                Api.Set("RestoreBackup", DynValue.NewCallback(Function(C, A) ApiRestoreBackup(A)))
+                Api.Set("CopyToClipboard", DynValue.NewCallback(Function(C, A) ApiCopyToClipboard(A)))
+                Api.Set("ShowDialog", DynValue.NewCallback(Function(C, A) ApiShowDialog(A)))
+                Api.Set("SetTickInterval", DynValue.NewCallback(Function(C, A) ApiSetTickInterval(A)))
                 Api.Set("Backup", DynValue.NewCallback(Function(C, A) ApiBackup()))
                 Api.Set("OpenUrl", DynValue.NewCallback(Function(C, A) ApiOpenUrl(A)))
                 Api.Set("OpenFolder", DynValue.NewCallback(Function(C, A) ApiOpenFolder(A)))
@@ -383,10 +491,12 @@ Namespace Plugin
                 Return DynValue.Nil
             End Function
 
-            '当前实例信息：名称、加载器、游戏版本、Mod 数量、实例目录
-            Private Function ApiGetInstance() As DynValue
+            '实例信息：不传参数时取当前选中实例，传版本名时取指定实例
+            Private Function ApiGetInstance(Args As CallbackArguments) As DynValue
                 Try
                     Dim Inst As McInstance = McInstanceSelected
+                    Dim TargetName As String = If(Args.Count > 0, Args(0).ToPrintString().Trim(), "")
+                    If TargetName <> "" Then Inst = FindInstanceByName(TargetName)
                     If Inst Is Nothing Then Return DynValue.NewString("")
                     Dim Loader As String = "原版"
                     Dim GameVersion As String = ""
@@ -650,6 +760,325 @@ Namespace Plugin
                 Return DynValue.NewTable(Result)
             End Function
 
+            '当前实例的备份列表
+            Private Function ApiGetBackups() As DynValue
+                Dim Result As New Table(Engine)
+                Try
+                    Dim Inst As McInstance = McInstanceSelected
+                    If Inst Is Nothing Then Return DynValue.NewTable(Result)
+                    Dim Root As String = ModBackup.BackupRoot(Inst.PathIndie)
+                    If Not DirectoryUtils.Exists(Root) Then Return DynValue.NewTable(Result)
+                    Dim Index As Integer = 1
+                    For Each Folder As String In DirectoryUtils.EnumerateDirectories(Root)
+                        Dim Item As New Table(Engine)
+                        Item.Set("name", DynValue.NewString(Path.GetFileName(Folder)))
+                        Item.Set("path", DynValue.NewString(Folder))
+                        Try
+                            Item.Set("time", DynValue.NewString(DirectoryUtils.GetInfo(Folder).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")))
+                        Catch
+                            Item.Set("time", DynValue.NewString(""))
+                        End Try
+                        Result.Set(Index, DynValue.NewTable(Item))
+                        Index += 1
+                    Next
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取备份列表失败")
+                End Try
+                Return DynValue.NewTable(Result)
+            End Function
+
+            '最近 10 份崩溃报告
+            Private Function ApiGetCrashReports() As DynValue
+                Dim Result As New Table(Engine)
+                Try
+                    Dim Inst As McInstance = McInstanceSelected
+                    If Inst Is Nothing Then Return DynValue.NewTable(Result)
+                    Dim Folder As String = Inst.PathIndie & "crash-reports\"
+                    If Not DirectoryUtils.Exists(Folder) Then Return DynValue.NewTable(Result)
+                    Dim Files As New List(Of String)
+                    For Each FilePath As String In DirectoryUtils.EnumerateFiles(Folder, False)
+                        Files.Add(FilePath)
+                    Next
+                    Files = Files.OrderByDescending(Function(F) If(FileUtils.Exists(F), FileUtils.GetInfo(F).LastWriteTime, Date.MinValue)).Take(10).ToList()
+                    Dim Index As Integer = 1
+                    For Each FilePath As String In Files
+                        Dim Item As New Table(Engine)
+                        Item.Set("file", DynValue.NewString(Path.GetFileName(FilePath)))
+                        Item.Set("path", DynValue.NewString(FilePath))
+                        Try
+                            Item.Set("time", DynValue.NewString(FileUtils.GetInfo(FilePath).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")))
+                        Catch
+                            Item.Set("time", DynValue.NewString(""))
+                        End Try
+                        Result.Set(Index, DynValue.NewTable(Item))
+                        Index += 1
+                    Next
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取崩溃报告失败")
+                End Try
+                Return DynValue.NewTable(Result)
+            End Function
+
+            '系统信息
+            Private Function ApiGetOsInfo() As DynValue
+                Dim Result As New Table(Engine)
+                Try
+                    Result.Set("os", DynValue.NewString(Environment.OSVersion.VersionString))
+                    Result.Set("cpu_count", DynValue.NewNumber(Environment.ProcessorCount))
+                    Result.Set("total_mb", DynValue.NewNumber(My.Computer.Info.TotalPhysicalMemory / 1024 / 1024))
+                    Result.Set("is_64bit", DynValue.NewBoolean(Environment.Is64BitProcess))
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件读取系统信息失败")
+                End Try
+                Return DynValue.NewTable(Result)
+            End Function
+
+            Private Shared Function IsHttpUrl(Url As String) As Boolean
+                Return Not String.IsNullOrWhiteSpace(Url) AndAlso
+                       (Url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) OrElse
+                        Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            End Function
+
+            '发起 GET 请求（需要 network 权限）
+            Private Function ApiHttpGet(Args As CallbackArguments) As DynValue
+                If Not HasPermission("network") Then
+                    Logger.Warn($"插件 {PluginId} 未声明 network 权限，已拒绝网络请求")
+                    Return DynValue.NewString("")
+                End If
+                Dim Url As String = ArgText(Args)
+                If Not IsHttpUrl(Url) Then Return DynValue.NewString("")
+                Try
+                    Net.ServicePointManager.SecurityProtocol = Net.SecurityProtocolType.Tls12
+                    Using Client As New Net.Http.HttpClient()
+                        Client.Timeout = TimeSpan.FromSeconds(15)
+                        Client.DefaultRequestHeaders.UserAgent.ParseAdd("PCL-JN-Plugin/1.0")
+                        Return DynValue.NewString(Client.GetStringAsync(Url).Result)
+                    End Using
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件请求 {Url} 失败：{ex.GetBaseException().Message}")
+                    Return DynValue.NewString("")
+                End Try
+            End Function
+
+            '发起 POST 请求（需要 network 权限）
+            Private Function ApiHttpPost(Args As CallbackArguments) As DynValue
+                If Not HasPermission("network") Then Return DynValue.NewString("")
+                If Args.Count < 2 Then Return DynValue.NewString("")
+                Dim Url As String = Args(0).ToPrintString()
+                Dim Body As String = Args(1).ToPrintString()
+                If Not IsHttpUrl(Url) Then Return DynValue.NewString("")
+                Try
+                    Net.ServicePointManager.SecurityProtocol = Net.SecurityProtocolType.Tls12
+                    Using Client As New Net.Http.HttpClient()
+                        Client.Timeout = TimeSpan.FromSeconds(15)
+                        Client.DefaultRequestHeaders.UserAgent.ParseAdd("PCL-JN-Plugin/1.0")
+                        Dim Content As New Net.Http.StringContent(Body, Text.Encoding.UTF8, "application/json")
+                        Return DynValue.NewString(Client.PostAsync(Url, Content).Result.Content.ReadAsStringAsync().Result)
+                    End Using
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件请求 {Url} 失败：{ex.GetBaseException().Message}")
+                    Return DynValue.NewString("")
+                End Try
+            End Function
+
+            'JSON 文本 -> Lua 表
+            Private Function ApiJsonDecode(Args As CallbackArguments) As DynValue
+                Try
+                    Return JsonTokenToLua(ArgText(Args).DeserializeJson())
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件解析 JSON 失败")
+                    Return DynValue.Nil
+                End Try
+            End Function
+
+            'Lua 表 -> JSON 文本
+            Private Shared Function ApiJsonEncode(Args As CallbackArguments) As DynValue
+                If Args.Count <= 0 Then Return DynValue.NewString("")
+                Try
+                    Return DynValue.NewString(LuaToJson(Args(0)).ToString(Newtonsoft.Json.Formatting.None))
+                Catch ex As Exception
+                    Return DynValue.NewString("")
+                End Try
+            End Function
+
+            Private Function JsonTokenToLua(Token As JToken) As DynValue
+                If Token Is Nothing Then Return DynValue.Nil
+                Select Case Token.Type
+                    Case JTokenType.Object
+                        Dim Result As New Table(Engine)
+                        For Each PropertyItem As JProperty In CType(Token, JObject).Properties
+                            Result.Set(PropertyItem.Name, JsonTokenToLua(PropertyItem.Value))
+                        Next
+                        Return DynValue.NewTable(Result)
+                    Case JTokenType.Array
+                        Dim Result As New Table(Engine)
+                        Dim Index As Integer = 1
+                        For Each Item As JToken In CType(Token, JArray)
+                            Result.Set(Index, JsonTokenToLua(Item))
+                            Index += 1
+                        Next
+                        Return DynValue.NewTable(Result)
+                    Case JTokenType.Integer, JTokenType.Float
+                        Return DynValue.NewNumber(Token.ToObject(Of Double)())
+                    Case JTokenType.Boolean
+                        Return DynValue.NewBoolean(Token.ToObject(Of Boolean)())
+                    Case JTokenType.Null, JTokenType.Undefined
+                        Return DynValue.Nil
+                    Case Else
+                        Return DynValue.NewString(Token.ToString())
+                End Select
+            End Function
+
+            Private Shared Function LuaToJson(Value As DynValue) As JToken
+                If Value Is Nothing Then Return JValue.CreateNull()
+                Select Case Value.Type
+                    Case DataType.Nil, DataType.Void
+                        Return JValue.CreateNull()
+                    Case DataType.Boolean
+                        Return New JValue(Value.Boolean)
+                    Case DataType.Number
+                        '整数就不要输出成 3.0 了
+                        If Value.Number = Math.Floor(Value.Number) AndAlso Math.Abs(Value.Number) < 1.0E+15 Then
+                            Return New JValue(CLng(Value.Number))
+                        End If
+                        Return New JValue(Value.Number)
+                    Case DataType.String
+                        Return New JValue(Value.String)
+                    Case DataType.Table
+                        Dim Source As Table = Value.Table
+                        If Source.Length > 0 Then
+                            Dim Array As New JArray
+                            For Index As Integer = 1 To Source.Length
+                                Array.Add(LuaToJson(Source.Get(Index)))
+                            Next
+                            Return Array
+                        End If
+                        Dim Obj As New JObject
+                        For Each Pair As TablePair In Source.Pairs
+                            Obj(Pair.Key.ToPrintString()) = LuaToJson(Pair.Value)
+                        Next
+                        Return Obj
+                    Case Else
+                        Return New JValue(Value.ToPrintString())
+                End Select
+            End Function
+
+            '启动指定版本（需用户确认）
+            Private Shared Function ApiLaunch(Args As CallbackArguments) As DynValue
+                Dim Name As String = ArgText(Args)
+                If Name = "" Then Return DynValue.False
+                Dim Inst As McInstance = FindInstanceByName(Name)
+                If Inst Is Nothing Then Return DynValue.False
+                Dim Allowed As Boolean = False
+                RunInUiWait(Sub() Allowed = MyMsgBox("插件请求启动版本：" & vbCrLf & vbCrLf & Inst.Name, "插件请求启动游戏", "启动", "取消") = 1)
+                If Not Allowed Then Return DynValue.False
+                Dim Started As Boolean = False
+                RunInUiWait(Sub() Started = McLaunchStart(New McLaunchOptions With {.Instance = Inst}))
+                Return DynValue.NewBoolean(Started)
+            End Function
+
+            '切换当前选中的版本
+            Private Shared Function ApiSelectInstance(Args As CallbackArguments) As DynValue
+                Dim Name As String = ArgText(Args)
+                If Name = "" Then Return DynValue.False
+                Dim Inst As McInstance = FindInstanceByName(Name)
+                If Inst Is Nothing Then Return DynValue.False
+                RunInUiWait(Sub()
+                                McInstanceSelected = Inst
+                                If FrmLaunchLeft IsNot Nothing Then
+                                    FrmLaunchLeft.RefreshButtonsUI()
+                                    FrmLaunchLeft.RefreshPage(False, False)
+                                End If
+                            End Sub)
+                Return DynValue.True
+            End Function
+
+            '停止启动或关闭游戏
+            Private Shared Function ApiStopGame() As DynValue
+                RunInUi(Sub()
+                            Try
+                                If McLaunchLoader IsNot Nothing AndAlso McLaunchLoader.State = LoadState.Loading Then McLaunchLoader.State = LoadState.Canceled
+                            Catch
+                            End Try
+                            For Each Item In McWatcherList.ToList()
+                                Try
+                                    Item.Kill()
+                                Catch
+                                End Try
+                            Next
+                        End Sub)
+                Return DynValue.True
+            End Function
+
+            '回滚到指定备份（需用户确认）
+            Private Shared Function ApiRestoreBackup(Args As CallbackArguments) As DynValue
+                Dim Folder As String = ArgText(Args)
+                Dim Inst As McInstance = McInstanceSelected
+                If Inst Is Nothing OrElse Folder = "" Then Return DynValue.NewString("")
+                Dim Allowed As Boolean = False
+                RunInUiWait(Sub() Allowed = MyMsgBox("插件请求回滚备份：" & vbCrLf & vbCrLf & Folder & vbCrLf & vbCrLf & "当前文件会被替换，确定继续吗？", "插件请求回滚备份", "回滚", "取消") = 1)
+                If Not Allowed Then Return DynValue.NewString("")
+                Try
+                    Return DynValue.NewString(ModBackup.Restore(Inst.PathIndie, Folder, True))
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件回滚备份失败")
+                    Return DynValue.NewString("")
+                End Try
+            End Function
+
+            Private Shared Function ApiCopyToClipboard(Args As CallbackArguments) As DynValue
+                Dim Message As String = ArgText(Args)
+                If Message = "" Then Return DynValue.False
+                Try
+                    RunInUiWait(Sub() System.Windows.Clipboard.SetText(Message))
+                    Return DynValue.True
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件写入剪贴板失败")
+                    Return DynValue.False
+                End Try
+            End Function
+
+            Private Shared Function ApiShowDialog(Args As CallbackArguments) As DynValue
+                Dim Title As String = If(Args.Count > 0, Args(0).ToPrintString(), "插件提示")
+                Dim Message As String = If(Args.Count > 1, Args(1).ToPrintString(), "")
+                RunInUiWait(Sub() MyMsgBox(Message, Title, "确定"))
+                Return DynValue.Nil
+            End Function
+
+            '设置 OnTick 的触发间隔，传 0 关闭
+            Private Function ApiSetTickInterval(Args As CallbackArguments) As DynValue
+                Dim Seconds As Double = 0
+                If Args.Count > 0 Then Seconds = Args(0).Number
+                Try
+                    If TickTimer IsNot Nothing Then
+                        TickTimer.Dispose()
+                        TickTimer = Nothing
+                    End If
+                    If Seconds <= 0 Then Return DynValue.True
+                    Dim Interval As Integer = CInt(Math.Max(1, Seconds) * 1000)
+                    TickTimer = New Threading.Timer(Sub(State)
+                                                        RunWithTimeout("OnTick", Sub() CallScript("OnTick"), 10000)
+                                                    End Sub, Nothing, Interval, Interval)
+                    Return DynValue.True
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件设置定时器失败")
+                    Return DynValue.False
+                End Try
+            End Function
+
+            Private Shared Function FindInstanceByName(Name As String) As McInstance
+                Try
+                    For Each Group As KeyValuePair(Of McInstanceCardType, List(Of McInstance)) In McInstanceList.ToArray()
+                        For Each Inst As McInstance In Group.Value
+                            If String.Equals(Inst.Name, Name, StringComparison.OrdinalIgnoreCase) Then Return Inst
+                        Next
+                    Next
+                Catch ex As Exception
+                    Logger.Warn(ex, "插件查找版本失败")
+                End Try
+                Return Nothing
+            End Function
+
             '在设置页插件卡片里注册一个按钮
             Private Function ApiAddMenuItem(Args As CallbackArguments) As DynValue
                 If Args.Count < 2 Then Return DynValue.False
@@ -697,6 +1126,13 @@ Namespace Plugin
             End Sub
 
             Public Sub OnUnload() Implements IPlugin.OnUnload
+                Try
+                    If TickTimer IsNot Nothing Then
+                        TickTimer.Dispose()
+                        TickTimer = Nothing
+                    End If
+                Catch
+                End Try
                 RunWithTimeout("OnUnload", Sub() CallScript("OnUnload"), 3000)
             End Sub
 
@@ -710,6 +1146,22 @@ Namespace Plugin
 
             Public Sub OnGameCrashed(ReportFolder As String) Implements IPluginCrashHandler.OnGameCrashed
                 RunWithTimeout("OnGameCrashed", Sub() CallScript("OnGameCrashed", ReportFolder), 15000)
+            End Sub
+
+            Public Sub OnPageChanged(PageName As String) Implements IPluginPageChanged.OnPageChanged
+                RunWithTimeout("OnPageChanged", Sub() CallScript("OnPageChanged", PageName), 10000)
+            End Sub
+
+            Public Sub OnLaunchFailed(Reason As String) Implements IPluginLaunchFailed.OnLaunchFailed
+                RunWithTimeout("OnLaunchFailed", Sub() CallScript("OnLaunchFailed", Reason), 10000)
+            End Sub
+
+            Public Sub OnVersionInstalled(VersionName As String) Implements IPluginVersionInstalled.OnVersionInstalled
+                RunWithTimeout("OnVersionInstalled", Sub() CallScript("OnVersionInstalled", VersionName), 15000)
+            End Sub
+
+            Public Sub OnInstanceSelected(VersionName As String) Implements IPluginInstanceSelected.OnInstanceSelected
+                RunWithTimeout("OnInstanceSelected", Sub() CallScript("OnInstanceSelected", VersionName), 10000)
             End Sub
         End Class
 
@@ -748,7 +1200,10 @@ Namespace Plugin
                         .Loaded = E.Loaded,
                         .ErrorMessage = E.ErrorMessage,
                         .EntryFile = E.EntryFile,
-                        .Permissions = New List(Of String)(E.Permissions)
+                        .Permissions = New List(Of String)(E.Permissions),
+                        .Requires = New List(Of String)(E.Requires),
+                        .UpdateUrl = E.UpdateUrl,
+                        .Folder = E.Folder
                     }).ToList()
             End SyncLock
         End Function
@@ -823,6 +1278,45 @@ Namespace Plugin
                     Logger.Warn(ex, $"插件 {Record.Entry.Id} 处理崩溃事件失败")
                 End Try
             Next
+        End Sub
+
+        ''' <summary>
+        ''' 通用的事件转发：只调用实现了对应接口的插件。
+        ''' </summary>
+        Private Sub RaiseToHandlers(Of THandler As Class)(EventName As String, Invoke As Action(Of THandler))
+            Dim Snapshot As PluginRecord()
+            SyncLock PluginLock
+                Snapshot = LoadedPlugins.Where(Function(R) R.Entry.Enabled).ToArray()
+            End SyncLock
+            For Each Record As PluginRecord In Snapshot
+                Dim Handler As THandler = TryCast(Record.Instance, THandler)
+                If Handler Is Nothing Then Continue For
+                Try
+                    Invoke(Handler)
+                Catch ex As Exception
+                    Logger.Warn(ex, $"插件 {Record.Entry.Id} 处理 {EventName} 事件失败")
+                End Try
+            Next
+        End Sub
+
+        ''' <summary>转发页面切换事件。</summary>
+        Public Sub RaisePageChanged(PageName As String)
+            RaiseToHandlers(Of IPluginPageChanged)("页面切换", Sub(H) H.OnPageChanged(PageName))
+        End Sub
+
+        ''' <summary>转发启动失败事件。</summary>
+        Public Sub RaiseLaunchFailed(Reason As String)
+            RaiseToHandlers(Of IPluginLaunchFailed)("启动失败", Sub(H) H.OnLaunchFailed(Reason))
+        End Sub
+
+        ''' <summary>转发版本安装完成事件。</summary>
+        Public Sub RaiseVersionInstalled(VersionName As String)
+            RaiseToHandlers(Of IPluginVersionInstalled)("安装完成", Sub(H) H.OnVersionInstalled(VersionName))
+        End Sub
+
+        ''' <summary>转发选中版本变化事件。</summary>
+        Public Sub RaiseInstanceSelected(VersionName As String)
+            RaiseToHandlers(Of IPluginInstanceSelected)("版本切换", Sub(H) H.OnInstanceSelected(VersionName))
         End Sub
 
         ''' <summary>
@@ -922,6 +1416,15 @@ Namespace Plugin
 
             Public Sub Log(Message As String) Implements IPluginContext.Log
                 Logger.Info($"[插件 {PluginId}] {Message}")
+                '额外写入插件自己的日志文件，方便排查
+                Try
+                    DirectoryUtils.Create(_DataPath)
+                    Dim LogFile As String = _DataPath & "log.txt"
+                    Dim FileInfoObj As New System.IO.FileInfo(LogFile)
+                    If FileInfoObj.Exists AndAlso FileInfoObj.Length > 262144 Then System.IO.File.Delete(LogFile)
+                    System.IO.File.AppendAllText(LogFile, $"[{Date.Now:yyyy-MM-dd HH:mm:ss}] {Message}{vbCrLf}")
+                Catch
+                End Try
             End Sub
 
             Public Sub ShowHint(Message As String, Optional IsError As Boolean = False) Implements IPluginContext.ShowHint
