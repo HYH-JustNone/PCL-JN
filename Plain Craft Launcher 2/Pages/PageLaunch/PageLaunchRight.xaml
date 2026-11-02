@@ -1,0 +1,60 @@
+<local:MyPageRight x:Class="PageLaunchRight"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+    xmlns:behaviors="clr-namespace:PCL.Controls.Behaviors"
+    xmlns:local="clr-namespace:PCL" PanScroll="PanBack">
+    <local:MyScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" x:Name="PanBack">
+        <StackPanel Name="PanMain" Margin="25,25,25,10" Grid.IsSharedSizeScope="True">
+            <local:MyHint x:Name="PanHint" RelativeSetup="HintSnapshot" Theme="Blue" CanClose="True" Margin="0,0,0,15"
+                          Text="快照版 PCL 包含尚未正式发布的测试功能，仅限赞助者自己使用。&#xa;请不要随意发给其他人，或是用来制作整合包哦！" />
+            <StackPanel x:Name="PanCustom">
+            </StackPanel>
+            <local:MyCard Margin="0,0,0,15" Title="AI 助手" x:Name="PanAiChat">
+                <StackPanel Margin="15,34,15,13">
+                    <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="14" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="14" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <local:MyTextButton x:Name="BtnAiHistory" Text="历史会话" FontSize="12.5" VerticalAlignment="Center"
+                                            ToolTip="查看已归档的旧对话，点击其中一条即可载入。" />
+                        <local:MyTextButton x:Name="BtnAiNew" Grid.Column="3" Text="新对话" FontSize="12.5" VerticalAlignment="Center"
+                                            ToolTip="清空当前上下文并开始一段新对话，旧对话会被归档保存。" />
+                        <local:MyTextButton x:Name="BtnAiClear" Grid.Column="5" Text="清空历史" FontSize="12.5" VerticalAlignment="Center"
+                                            ToolTip="删除全部聊天记录（包含已归档的旧对话），无法恢复。" />
+                    </Grid>
+                    <StackPanel x:Name="PanAiHistory" Visibility="Collapsed" Margin="0,0,0,8">
+                        <TextBlock Text="历史会话（点击载入，当前对话会先归档）" FontSize="12" Opacity="0.6" Margin="0,0,0,4" />
+                        <local:MyScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel x:Name="PanAiHistoryItems" />
+                        </local:MyScrollViewer>
+                    </StackPanel>
+                    <local:MyScrollViewer Height="220" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" x:Name="PanAiScroll">
+                        <StackPanel x:Name="PanAiMessages" />
+                    </local:MyScrollViewer>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1*" />
+                            <ColumnDefinition Width="8" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <local:MyTextBox x:Name="TextAiInput" Height="30" AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Center"
+                                         HintText="输入消息，Enter 发送，Shift + Enter 换行" />
+                        <local:MyButton x:Name="BtnAiSend" Grid.Column="2" Height="30" MinWidth="80" Text="发送" Padding="13,0" ColorType="Highlight" />
+                    </Grid>
+                </StackPanel>
+            </local:MyCard>
+            <local:MyCard Margin="0,0,0,15" Title="启动日志" x:Name="PanLog">
+                <local:MyTextBox x:Name="LabLog" Margin="15,34,15,13" Padding="0,4" IsReadOnly="True" IsUndoEnabled="False"
+                         AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" HasBackground="False"
+                         VerticalScrollBarVisibility="Disabled" HorizontalScrollBarVisibility="Disabled" />
+            </local:MyCard>
+        </StackPanel>
+    </local:MyScrollViewer>
+</local:MyPageRight>
